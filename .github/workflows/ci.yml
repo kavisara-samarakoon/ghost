@@ -1,0 +1,103 @@
+name: CI
+
+"on":
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  cli:
+    name: CLI (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.14"]
+    defaults:
+      run:
+        working-directory: apps/cli
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: Install CLI and development dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+      - name: Run CLI tests
+        run: pytest
+      - name: Lint CLI
+        run: ruff check .
+
+  release-scripts:
+    name: Release scripts
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+      - name: Check Bash syntax
+        run: |
+          bash -n scripts/release/common.sh
+          bash -n scripts/release/start-milestone.sh
+          bash -n scripts/release/commit-milestone.sh
+          bash -n scripts/release/open-pr.sh
+          bash -n scripts/release/merge-and-tag.sh
+      - name: Install test runner
+        run: python -m pip install 'pytest>=8.3,<10'
+      - name: Test release safeguards with mock Git and GitHub commands
+        run: python -m pytest scripts/release/tests
+
+  repo-hygiene:
+    name: Repository hygiene
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          # Compare the entire PR/push, not only the final commit.
+          fetch-depth: 0
+      - name: Check whitespace
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          git diff --check
+          if [[ "$GITHUB_EVENT_NAME" == "pull_request" ]]; then
+            base="$PR_BASE_SHA"
+          elif [[ "$PUSH_BEFORE_SHA" =~ ^0+$ ]]; then
+            # A new main branch has no previous commit: compare against an empty tree.
+            base=$(git hash-object -t tree /dev/null)
+          else
+            base="$PUSH_BEFORE_SHA"
+          fi
+          git diff --check "$base" HEAD
+      - name: Reject tracked Python bytecode and cache directories
+        run: |
+          # NUL delimiters also handle filenames containing spaces or newlines.
+          git ls-files -z | while IFS= read -r -d '' file; do
+            case "$file" in
+              __pycache__|*/__pycache__|__pycache__/*|*/__pycache__/*|*.pyc)
+                echo '::error::Remove tracked Python bytecode/cache files from the index.'
+                printf 'Tracked cache path: %q\n' "$file"
+                exit 1
+                ;;
+            esac
+          done

@@ -44,6 +44,15 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Tests cover input rejection, redaction, session inference, list read-only behavior,
   summary read boundaries, partial failures, and all previous CLI commands.
 
+## Milestone 4.5: GitHub Actions CI
+
+- Added CI for pull requests targeting `main` and pushes to `main`.
+- CLI pytest/Ruff matrix covers Python 3.11 and 3.14 on Ubuntu.
+- Release helpers receive Bash syntax checks and mocked safety tests.
+- Repository hygiene checks PR/push whitespace and rejects tracked Python caches.
+- Read-only repository permissions; human review and typed release confirmations
+  remain required. No CLI behavior or desktop changes.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
