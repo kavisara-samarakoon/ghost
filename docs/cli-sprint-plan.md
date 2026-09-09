@@ -65,12 +65,25 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Complete private packs publish together; content-free audits and partial-failure
   reporting preserve existing sources and drafts. Tests cover safety and regressions.
 
+## Day 6 / Milestone 6: Doctor + Release Readiness
+
+- Added `ghost doctor` and `ghost doctor --project <alias>` with structured
+  PASS/WARN/ERROR findings; only errors produce a nonzero exit.
+- Checks global storage, registry/workspace agreement, required workspace files,
+  session pointer/record consistency, and indexed output files/session references.
+- Uses bounded safe YAML reads and existing record models. Reports omit source
+  contents; no initialization, repair, locks, audit writes, or source-tree scans.
+- Tests cover healthy and broken storage, project selection, malformed metadata,
+  restricted read boundaries, unsafe file types, preservation, and regressions.
+- Release readiness combines doctor with manual tests/lint, help checks, diff
+  review, and existing CI/release approvals. Storage health is not release approval.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–5.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–6.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.

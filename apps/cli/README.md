@@ -4,7 +4,7 @@ GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
 workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
 (Local Foundation), Milestone 2 (Session Manager), Milestone 3 (Context Packs
 and AI Handoff Generators), Milestone 4 (Output Logger + Next-Step Summary),
-and Milestone 5 (Update Pack Generator).
+Milestone 5 (Update Pack Generator), and Milestone 6 (Doctor + Release Readiness).
 GHOST tracks goals and notes, stores sanitized supplied outputs, and writes local
 Markdown drafts. It does not run workflows or connect to an AI service.
 
@@ -27,6 +27,7 @@ ghost handoff --help
 ghost output --help
 ghost next --help
 ghost update-pack --help
+ghost doctor --help
 ```
 
 The `ghost` executable belongs to this virtual environment. Use its full path
@@ -306,6 +307,60 @@ is preserved and the error asks you to inspect both logs before retrying.
 No existing README, workspace sources, or previous drafts are modified. Draft
 creation never approves publication, execution, modification, commit, or push.
 
+## Doctor + Release Readiness — Milestone 6
+
+```sh
+ghost doctor
+ghost doctor --project my-project
+```
+
+The Rich report groups structured findings into PASS, WARN, and ERROR sections.
+Exit status is 0 with no errors (including warnings), or 1 with errors. Unknown
+aliases fail clearly. Independent checks continue after failures; checks that
+depend on missing or invalid registry/workspace records cannot proceed.
+
+Without `--project`, doctor checks `GHOST_HOME`, config and registry YAML schemas,
+the global audit file, and every registered project's directory and workspace.
+With `--project`, it checks the home and registry plus that project only; unrelated
+projects, global config, and global audit are excluded. Each workspace check covers:
+
+- `project.yaml` schema and alias/name/path agreement with the registry.
+- Required `status.md`, `decisions.md`, `milestones.yaml`, `sessions/`, `drafts/`,
+  and `audit.jsonl`. Milestones must have a version 1 envelope and a milestones list;
+  individual milestone entries have no defined schema yet.
+- Optional `active-session.yaml` and immediate, validly named session directories'
+  `session.yaml` records, including closed records. This detects missing pointers,
+  duplicate active records, project/folder identity mismatches, and pointers to
+  closed or missing sessions. Active session `notes.md` must exist.
+- Optional `outputs/index.yaml`: schema, unique IDs, constrained paths, project
+  aliases, each indexed artifact's file metadata, and referenced session identities.
+  A link to a retained closed session is valid.
+
+An absent output directory or active session is normal. An existing output
+directory without an index, unrecognized session entries, an empty registry, or
+a global writer lock produces a warning. Doctor never removes locks. Rerun after
+writers finish; this read-only report is not a transactional snapshot.
+
+Only the listed YAML metadata is opened, with the shared safe reader's 256 KiB
+per-file limit and rejection of YAML aliases. Schema and storage errors omit raw
+contents, private paths, goals, and titles; displayed project aliases use the
+existing redactor. Environment paths, redirected project/workspace paths, symlinks,
+multiply linked files, and non-regular files are rejected. `GHOST_HOME` uses the
+existing home-resolution behavior. Like other local storage safeguards, checks
+do not defend against a hostile process replacing files concurrently.
+
+Audit logs, Markdown context, active notes, and indexed output bodies receive only
+file metadata checks: their contents, UTF-8 validity, note counts, and claims are
+not verified. Doctor does not recursively scan source, drafts, or output folders,
+discover unindexed artifacts, inspect Git/CI, call APIs, or execute commands.
+No files, directories, locks, or audit events are created or changed; there is no
+repair mode. Back up and review inconsistent records before manual recovery.
+
+For release readiness, use doctor alongside manual pytest/Ruff, CLI help checks,
+and diff review. A healthy report certifies only these storage checks; it does not
+establish security or production readiness, validate claimed accomplishments, or
+replace CI and the [release workflow](../../docs/release-workflow.md) approvals.
+
 ## Storage
 
 Global home defaults to `~/.ghost`; `GHOST_HOME` overrides it. Relative overrides
@@ -410,6 +465,8 @@ templates; `redaction.py` sanitizes export text using the existing audit rules.
 `output_models.py` validates output records; `outputs.py` handles ingestion and
 index lookup; `next_steps.py` renders deterministic summaries. `update_packs.py`
 assembles audience-specific update drafts and publishes complete private packs.
+`doctor.py` collects structured read-only storage findings; `cli.py` renders the
+report and selects its exit status.
 Tests isolate both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
 the real `~/.ghost`.
 
