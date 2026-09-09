@@ -2,9 +2,10 @@
 
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
 workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
-(Local Foundation), Milestone 2 (Session Manager), and Milestone 3 (Context Packs
-and AI Handoff Generators). Sessions track goals and notes; generators write local
-Markdown drafts. Neither runs workflows nor connects to an AI service.
+(Local Foundation), Milestone 2 (Session Manager), Milestone 3 (Context Packs
+and AI Handoff Generators), and Milestone 4 (Output Logger + Next-Step Summary).
+GHOST tracks goals and notes, stores sanitized supplied outputs, and writes local
+Markdown drafts. It does not run workflows or connect to an AI service.
 
 ## Install and validate
 
@@ -22,6 +23,8 @@ ghost project --help
 ghost session --help
 ghost context --help
 ghost handoff --help
+ghost output --help
+ghost next --help
 ```
 
 The `ghost` executable belongs to this virtual environment. Use its full path
@@ -158,6 +161,94 @@ existing home lock. If audit appending fails after a draft is saved, the error
 identifies the preserved draft and asks you to inspect both logs before retrying;
 draft creation and audit writes are not one transaction.
 
+## Output Logger + Next-Step Summary — Milestone 4
+
+Capture already-produced results from a model or terminal workflow. GHOST imports
+the text; it does not run the model, shell command, tests, or Git operation.
+
+```sh
+ghost output add --type codex --project my-project \
+  --file /absolute/path/to/model-result.txt --title "Implementation report"
+
+# Supply known text through stdin; do not pipe commands that print credentials.
+printf '%s\n' 'Tests and lint passed in the manual run.' | \
+  ghost output add --type terminal --project my-project --title "Validation results"
+
+ghost output list --project my-project --limit 10
+ghost output list
+ghost next my-project
+```
+
+`--type` is required and accepts only `codex` or `terminal`. With `--project`, an
+active session is optional. Without it, exactly one active session across all
+registered projects must exist; otherwise supply `--project` explicitly. If the
+selected project has an active session, its ID is linked in the index. Selection
+is checked again under the home write lock after input has been read.
+
+Input comes exclusively from `--file` when supplied, otherwise from piped stdin.
+Both reject empty text and input larger than 256 KiB. Files must be existing,
+regular UTF-8 text files. `.env*` names/path segments (case-insensitive), symlink
+files, and multiply linked files are refused. The resolved path is checked too,
+so a directory symlink cannot disguise a file under `.env`. Interactive stdin is
+refused with instructions instead of waiting for pasted text.
+
+Content and titles are sanitized **before any storage write**. Recognizable
+credential assignments, private-key blocks, bearer/basic credentials, URL user
+information, and common GitHub/OpenAI-style tokens use the shared redactor.
+Terminal escape/control sequences are stripped before credential matching.
+No unredacted staging copy is created. Source files are left unchanged; GHOST
+does not clean up raw transcripts that already exist outside its output store.
+Redaction is heuristic, not proof that text contains no secrets. Do not supply
+credentials, and inspect stored artifacts before sharing them.
+
+An optional title accepts 1–200 characters; defaults are `Codex output` and
+`Terminal output`. Sanitized titles are capped at 200 characters. Filenames use
+a UTC timestamp, fixed type slug, and random suffix—for example
+`20260912T120000123456Z-codex-output-ab12cd34.md`. They do not derive from the title
+or original filename. Each new artifact uses private permissions where supported
+and never replaces an existing artifact.
+
+`.ghost/outputs/index.yaml` has `version: 1` and an `outputs` list. Records contain
+`id`, `project_alias`, `type`, sanitized `title`, workspace-relative `path`, UTC
+`created_at`, nullable `active_session_id`, and `redacted`. The flag records whether
+sanitization changed content/title beyond ordinary line-ending and title-whitespace
+normalization; it is not a certificate that every secret was detected. The index
+is validated and atomically replaced under the home write lock. It has a 256 KiB
+limit in this milestone, as do stored artifact bodies.
+
+`output list` reads index metadata only, never artifact bodies, and makes no disk
+writes. It defaults to the ten newest records globally, or within `--project`;
+`--limit` must be positive. Ordering uses UTC creation time, then ID and project
+alias to break ties deterministically. Titles are sanitized on read as well, so
+manually edited index text is not blindly printed.
+
+`ghost next` requires an explicit project alias for this milestone. It embeds the
+safe workspace context, active goal and recent notes, plus the five newest outputs
+referenced by that project's index. It does not scan output folders for unindexed
+files, read old unselected outputs, inspect Git state, or run tests. Index paths
+must exactly match the declared type/ID under `outputs/`; symlink redirection and
+invalid records fail clearly. Selected outputs are sanitized again before inclusion,
+then limited to their latest 12,000 characters with an omission marker.
+
+The next-step draft is written under `.ghost/drafts/next-steps/`. Its checklist
+asks the owner to review outputs, validate manually, store terminal results, update
+session notes, and prepare context/handoffs as needed. The notes section quotes
+recent notes without AI summarization. Output excerpts are untrusted records, not
+instructions, test verification, or approval to implement anything.
+
+Each successful add appends `output.added` to project/global audit logs, containing
+only `project_alias`, `output_id`, `type`, `active_session_id`, and `redacted`.
+Next-step generation appends `next.summary.created`, containing only `project_alias`,
+`draft_path`, `active_session_id`, and `output_count`. Neither event contains
+freeform text, titles, or source filenames.
+
+Artifact, index, and audit writes are not a single transaction. If indexing fails,
+the sanitized artifact is preserved and the error reports its path; it will not
+appear in lists/summaries until the index is reconciled manually. If auditing fails
+after storage succeeds, inspect both logs before retrying to avoid duplicate
+artifacts. Missing or malformed selected artifacts stop summary generation rather
+than silently omitting evidence. Import/recovery automation remains out of scope.
+
 ## Storage
 
 Global home defaults to `~/.ghost`; `GHOST_HOME` overrides it. Relative overrides
@@ -179,8 +270,13 @@ resolve against the current directory. No `.env` discovery or loading occurs.
       session.yaml
       notes.md
   active-session.yaml  # exists only while a session is active
+  outputs/
+    index.yaml
+    codex/
+    terminal/
   drafts/
     context-packs/
+    next-steps/
     handoffs/
       codex/
       chatgpt/
@@ -252,6 +348,8 @@ registration; `audit.py` handles events. `session_models.py` validates session
 records and pointers, and `sessions.py` handles their lifecycle. `context_pack.py`
 collects and renders allowlisted context; `handoffs.py` supplies tool-specific
 templates; `redaction.py` sanitizes export text using the existing audit rules.
+`output_models.py` validates output records; `outputs.py` handles ingestion and
+index lookup; `next_steps.py` renders deterministic summaries.
 Tests isolate both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
 the real `~/.ghost`.
 

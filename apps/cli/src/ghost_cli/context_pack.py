@@ -99,7 +99,12 @@ def session_context(project: ProjectRecord, workspace: Path) -> tuple[str, str]:
     return yaml_block(session.model_dump(mode="json")), source_block(notes, "markdown")
 
 
-def render_context(project: ProjectRecord, generated_at: datetime) -> str:
+def render_context(
+    project: ProjectRecord,
+    generated_at: datetime,
+    *,
+    notes_heading: str = "## Recent session notes",
+) -> str:
     workspace = workspace_path(project)
     identity = read_yaml_source(workspace / "project.yaml")
     if identity.get("alias") != project.alias or identity.get("path") != str(project.path):
@@ -122,11 +127,26 @@ def render_context(project: ProjectRecord, generated_at: datetime) -> str:
         "## Decisions\n\n" + source_block(decisions, "markdown"),
         "## Milestones\n\n" + yaml_block(milestones),
         "## Active session summary\n\n" + summary,
-        "## Recent session notes\n\n" + notes,
+        notes_heading + "\n\n" + notes,
         "## Safe next step\n\n[Owner: specify a focused next task, allowed files, and acceptance "
         "criteria. No implementation or execution is authorized by this draft.]",
     ]
     return "\n\n".join(sections) + "\n"
+
+
+def write_markdown(directory: Path, content: str, prefix: str) -> Path:
+    """Exclusively create a private file; callers must pass already sanitized text."""
+    descriptor, filename = tempfile.mkstemp(prefix=prefix, suffix=".md", dir=directory)
+    output = Path(filename)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+            stream.write(content)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except OSError:
+        output.unlink(missing_ok=True)
+        raise
+    return output
 
 
 def save_draft(
@@ -146,18 +166,7 @@ def save_draft(
     directory = safe_directory(workspace / "drafts")
     for folder in folders:
         directory = safe_directory(directory / folder, create=True)
-    descriptor, filename = tempfile.mkstemp(
-        prefix=f"{generated_at:%Y%m%dT%H%M%S%fZ}-", suffix=".md", dir=directory
-    )
-    output = Path(filename)
-    try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
-            stream.write(content)
-            stream.flush()
-            os.fsync(stream.fileno())
-    except OSError:
-        output.unlink(missing_ok=True)
-        raise
+    output = write_markdown(directory, content, f"{generated_at:%Y%m%dT%H%M%S%fZ}-")
     metadata = {"project_alias": project.alias, "draft": str(output.relative_to(workspace))}
     if tool is not None:
         metadata["tool"] = tool

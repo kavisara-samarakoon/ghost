@@ -7,10 +7,11 @@ The active MVP is the Python CLI and workflow engine in `apps/cli`. Milestone 1
 provides local initialization, project registration, project workspaces, and audit logs.
 Milestone 2 adds local sessions with goals, timestamped notes, and retained history.
 Milestone 3 generates local context packs and AI handoff drafts from workspace records.
+Milestone 4 stores sanitized supplied outputs and generates deterministic next-step drafts.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–3 and remains unchanged.
+Milestones 1–4 and remains unchanged.
 
 ## Setup
 
@@ -78,6 +79,24 @@ session notes are read—no source scan, Git inspection, AI call, upload, or com
 execution. Recognizable credentials are redacted, but review drafts before sharing;
 redaction cannot recognize every secret. Fill in the owner-approved scope manually.
 
+## Output logging and next steps — Milestone 4
+
+```sh
+ghost output add --type codex --project ghost --file /path/to/result.txt \
+  --title "Implementation report"
+printf '%s\n' 'Manual validation completed.' | \
+  ghost output add --type terminal --project ghost
+ghost output list --project ghost --limit 10
+ghost next ghost
+```
+
+Outputs are sanitized before storage under `.ghost/outputs/`, with an index that
+links the active session when present. `--project` may be omitted from `output add`
+only when exactly one session is active globally. `ghost next` requires an alias
+and combines safe workspace context with recent indexed outputs in a local draft.
+Neither command executes the supplied text, calls AI, or verifies claimed results.
+Environment-file inputs are refused; review sanitized artifacts before sharing.
+
 ## Safety and validation
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
@@ -98,6 +117,8 @@ ghost project --help
 ghost session --help
 ghost context --help
 ghost handoff --help
+ghost output --help
+ghost next --help
 ```
 
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.

@@ -21,10 +21,13 @@ TOKEN = re.compile(
     r"github_pat_[A-Za-z0-9_]{8,}|AIza[A-Za-z0-9_-]{20,}|AKIA[A-Z0-9]{16}|"
     r"eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)\b"
 )
+TERMINAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\))")
+CONTROL = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def redact_text(text: str) -> str:
     """Redact before truncation, so partial private-key blocks cannot escape."""
+    text = CONTROL.sub("", TERMINAL_ESCAPE.sub("", text))
     text = PRIVATE_KEY.sub(REDACTED, text)
     lines = []
     sensitive_indent: int | None = None

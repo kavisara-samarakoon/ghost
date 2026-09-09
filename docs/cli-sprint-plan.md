@@ -32,12 +32,24 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Tests cover source boundaries, redaction, output locations, safety instructions,
   preservation, and Milestone 1–2 regressions.
 
+## Day 4 / Milestone 4: Output Logger + Next-Step Summary
+
+- `output add` imports supplied Codex/terminal text from a file or stdin, sanitizes
+  it before writing, and records typed metadata linked to the active session.
+- `output list` is read-only, with per-project/global selection and newest-first limits.
+- `next <alias>` generates a deterministic draft from safe context and five recent
+  indexed artifacts, with review, manual validation, and safety checklists.
+- Environment-path guards, validated index paths, private files, atomic index updates,
+  and content-free audits keep storage within the local milestone scope.
+- Tests cover input rejection, redaction, session inference, list read-only behavior,
+  summary read boundaries, partial failures, and all previous CLI commands.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–3.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–4.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.
