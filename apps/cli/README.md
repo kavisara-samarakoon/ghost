@@ -1,8 +1,9 @@
 # GHOST CLI
 
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
-workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1,
-the local foundation. It does not yet run workflows or connect to an AI service.
+workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
+(Local Foundation) and Milestone 2 (Session Manager). Sessions track goals and
+notes locally; they do not run workflows or connect to an AI service.
 
 ## Install and validate
 
@@ -17,6 +18,7 @@ pytest
 ruff check .
 ghost --help
 ghost project --help
+ghost session --help
 ```
 
 The `ghost` executable belongs to this virtual environment. Use its full path
@@ -46,6 +48,47 @@ ghost project show my-project
   Empty lists include setup instructions; unknown aliases return an error.
 - Command errors exit with status 1; argument usage errors use Typer's status 2.
 
+## Session commands
+
+After registering a project:
+
+```sh
+ghost session start my-project --goal "Implement and validate the next milestone"
+ghost session status my-project
+ghost session status
+ghost session note "Storage tests pass; documentation is next." --project my-project
+ghost session close my-project
+```
+
+- `start` requires an alias and a non-blank `--goal`. The registered project's
+  `.ghost/` workspace and `sessions/` directory must already exist. Missing or
+  unsafe storage is reported, not silently recreated. Each project can have
+  only one active session; different projects may have sessions simultaneously.
+- `status [project_alias]` shows one project's active session or all active
+  sessions. It performs no writes, even when no projects or active sessions exist.
+- `note <text> [--project <alias>]` appends non-blank text under a UTC timestamp
+  in `notes.md` and increments `notes_count` in the session record.
+- `close [project_alias]` marks the session closed, records its UTC closing time,
+  and removes only its active pointer. The session directory and notes remain as
+  history. A new session can then be started for the project.
+- For `note` and `close`, the project may be omitted only when exactly one session
+  is active across the registry. Zero active sessions is an error. Multiple active
+  sessions require `--project` for a note or an explicit alias for close.
+
+Session IDs combine a UTC timestamp with a random suffix, for example
+`20260910T093000123456Z-1a2b3c4d`. The suffix separates sessions even if the clock
+returns the same timestamp twice. `session.yaml` stores `id`, `project_alias`,
+`project_name`, `goal`, `status`, `started_at`, `closed_at`, and `notes_count`.
+`active-session.yaml` stores just `id` and `project_alias`; the session record is
+the source for details. The pointer and record must agree on identity and status.
+
+Starting, noting, and closing append `session.started`, `session.note.added`, and
+`session.closed` respectively to both project and global audit logs. Session audit
+metadata includes only the alias, session ID, and note count—never the goal, note
+text, or project name. Goals and notes are stored as local plaintext, and status
+displays the goal; do not put credentials in them. Session creation is not approval
+to perform the goal.
+
 ## Storage
 
 Global home defaults to `~/.ghost`; `GHOST_HOME` overrides it. Relative overrides
@@ -63,6 +106,10 @@ resolve against the current directory. No `.env` discovery or loading occurs.
   decisions.md
   milestones.yaml   # version, milestones: []
   sessions/
+    <session-id>/
+      session.yaml
+      notes.md
+  active-session.yaml  # exists only while a session is active
   drafts/
   audit.jsonl
 ```
@@ -106,12 +153,30 @@ aside and retrying. If registration succeeds but the global audit append fails,
 repair audit storage and reconcile the missing event manually; do not rerun add.
 Existing workspace import and automatic recovery are deferred.
 
+Session mutations reuse the global write lock. Individual YAML and notes updates
+use atomic replacement, but changes across multiple files and audit logs are not
+a transaction. A failed note-count write attempts to restore the previous notes;
+a failed pointer removal during close attempts to restore the active record.
+Errors report whether recovery succeeded. If restoration also fails, inspect and
+reconcile the affected files before retrying. A process crash can still interrupt
+a multi-file change; automatic crash recovery is outside this milestone.
+
+If starting saves a session folder but cannot save its active pointer, the session
+is preserved and another start is blocked. After inspecting the session record,
+restore `active-session.yaml` with the record's exact `id` and `project_alias`.
+A pointer left referencing a closed record must be inspected and removed before
+continuing. Status never repairs these inconsistencies. If an audit append fails
+after a session change is saved, inspect both logs and reconcile missing events;
+repeating the command can duplicate notes or target a different active session.
+
 ## Development boundaries
 
 `cli.py` handles presentation; `models.py` defines records; `paths.py` and
 `config.py` handle global storage; `registry.py` and `workspace.py` handle project
-registration; `audit.py` handles events. Tests isolate both `GHOST_HOME` and the
-fallback home, so even default-path tests cannot touch the real `~/.ghost`.
+registration; `audit.py` handles events. `session_models.py` validates session
+records and pointers, and `sessions.py` handles their lifecycle. Tests isolate
+both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
+the real `~/.ghost`.
 
 This milestone has no AI API calls, voice, cloud features, database, subprocess
 execution, or GitHub automation. Drafts are not approvals. The future desktop UI
