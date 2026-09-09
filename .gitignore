@@ -27,3 +27,13 @@ src-tauri/target/
 npm-debug.log*
 pnpm-debug.log*
 yarn-debug.log*
+
+# Python CLI
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+.coverage
+htmlcov/
+.ghost-dev/

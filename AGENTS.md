@@ -2,7 +2,11 @@
 
 ## Project Identity
 
-GHOST is a premium local-first macOS desktop application.
+GHOST means GitHub, Handoff, Operations, Search, and Tracking.
+
+GHOST is a local-first personal AI workflow coordinator for Kavisara Samarakoon.
+The active MVP is the Python CLI/workflow engine in `apps/cli`.
+The premium macOS desktop app in `apps/desktop` is future UI only.
 
 Tagline:
 
@@ -12,21 +16,33 @@ GHOST coordinates personal software, cybersecurity, networking, Codex handoff, v
 
 ## Current Stack
 
-- Tauri
-- React
-- TypeScript
-- CSS
-- pnpm
-- Rust backend later
-- SQLite later
+- Active CLI: Python 3.11+, Typer, Rich, Pydantic, PyYAML
+- Validation: pytest and ruff
+- Storage: local YAML records, Markdown context, and JSONL audit logs
+- Future desktop UI: Tauri, React, TypeScript, CSS, pnpm
 
-Main app path:
+Main app path: `apps/cli`
 
-apps/desktop
+## Astra Sprint Context
+
+The owner has short-term access to a strong Codex/Astra coding model before
+ChatGPT Plus may expire around September 14, 2026. Use this sprint for serious
+milestone implementation, architecture, meaningful tests, and maintainability.
+Do not spend this opportunity on tiny cosmetic edits.
+
+## CLI-first Development Rules
+
+- Every new task must inspect `git status --short` before other repository work.
+- If uncommitted changes exist, especially outside `apps/cli`, stop and report
+  them unless the owner explicitly authorizes continuing. Never overwrite them.
+- Read this file before implementation.
+- `apps/cli` is the active MVP area.
+- Do not modify `apps/desktop` during CLI Milestone 1 unless explicitly requested.
+- Keep the CLI storage and workflow modules independent of the future UI.
 
 ## Product Direction
 
-GHOST must feel like:
+The future desktop UI must feel like:
 
 - a real macOS desktop app
 - minimal
@@ -75,22 +91,26 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
 
 ## Current MVP Scope
 
-GHOST v0.1.0 Desktop UI Foundation must include:
+GHOST CLI Milestone 1: Local Foundation includes:
 
-- desktop app shell
-- Command Space screen
-- Workflow Execution screen later
-- static project/session data
-- no real AI automation yet
-- no database yet
-- no unsafe terminal execution
+- `ghost init`
+- `ghost project add`, `ghost project list`, and `ghost project show`
+- Global config, project registry, and audit log under `GHOST_HOME` or `~/.ghost`
+- Per-project `.ghost/` context, sessions, drafts, milestones, and audit log
+- Pydantic models, UTC ISO timestamps, and sensitive audit metadata redaction
+- Draft-first assumptions; dangerous-action confirmation comes later
+- No AI API calls, voice, cloud features, GitHub automation, database logic,
+  or terminal command execution features
 
 ## Coding Rules
 
-- Keep components simple.
-- Use TypeScript cleanly.
+- Keep Python functions small, typed, and beginner-readable.
+- Use `pathlib`, safe YAML loading, and JSONL for local audit records.
+- Do not read `.env` files or expose secrets in output, errors, or audit metadata.
+- Keep tests isolated with temporary `GHOST_HOME` and project directories.
+- Never touch the real `~/.ghost` during tests.
+- Preserve existing user configuration and project workspace data.
 - Avoid unnecessary libraries.
-- Avoid complex state management for now.
 - Do not add authentication.
 - Do not add cloud sync.
 - Do not add backend APIs yet.
@@ -100,9 +120,25 @@ GHOST v0.1.0 Desktop UI Foundation must include:
 
 ## Validation Commands
 
-From apps/desktop:
+From `apps/cli`:
 
-    pnpm build
-    pnpm tauri dev
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -e ".[dev]"
+pytest
+ruff check .
+ghost --help
+ghost project --help
+```
 
-Before suggesting a commit, make sure the build passes.
+From the repository root, executable checks are:
+
+```sh
+apps/cli/.venv/bin/ghost --help
+apps/cli/.venv/bin/ghost project --help
+```
+
+Report validation results and confirm `apps/desktop` was not modified.
+Do not commit or push unless explicitly requested.
