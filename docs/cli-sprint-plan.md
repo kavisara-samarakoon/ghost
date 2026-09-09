@@ -53,12 +53,24 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Read-only repository permissions; human review and typed release confirmations
   remain required. No CLI behavior or desktop changes.
 
+## Day 5 / Milestone 5: Update Pack Generator
+
+- Added `ghost update-pack --project <alias>` for six local, review-only drafts:
+  README update, release notes, LinkedIn post, portfolio update, internal summary,
+  and a self-contained ChatGPT review request.
+- Reuses allowlisted context, active notes, five recent outputs, redaction, and the
+  deterministic next-step checklist. Does not read previous drafts or scan source.
+- Separates recorded claims from verified accomplishments; unknown details remain
+  owner-review placeholders, with no invented versions or production-readiness claims.
+- Complete private packs publish together; content-free audits and partial-failure
+  reporting preserve existing sources and drafts. Tests cover safety and regressions.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–4.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–5.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.

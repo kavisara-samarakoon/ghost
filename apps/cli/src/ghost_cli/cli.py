@@ -20,6 +20,7 @@ from ghost_cli.paths import GhostError
 from ghost_cli.redaction import redact_text
 from ghost_cli.registry import add_project, find_project, load_registry
 from ghost_cli.sessions import active_sessions, add_note, close_session, start_session
+from ghost_cli.update_packs import create_update_pack
 
 app = typer.Typer(
     help="GHOST — GitHub, Handoff, Operations, Search, and Tracking. Local workflow foundation.",
@@ -281,6 +282,19 @@ def next_summary(
     with command_errors():
         output = create_next_summary(project_alias)
         console.print(f"Next-step draft created: {output}", style="green", soft_wrap=True)
+
+
+@app.command("update-pack")
+def update_pack(
+    project: Annotated[str, typer.Option("--project", help="Required registered project alias.")],
+) -> None:
+    """Write six review-only update drafts from safe context and recent outputs."""
+    with command_errors():
+        output = create_update_pack(project)
+        console.print(
+            f"Update pack created: {redact_text(str(output))}", style="green", soft_wrap=True
+        )
+        console.print("Review all six drafts before sharing. No publication or execution occurred.")
 
 
 if __name__ == "__main__":
