@@ -14,12 +14,21 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Verify success paths, invalid input, preservation, and storage failures.
 - Complete pytest, ruff, and installed CLI help checks.
 
+## Day 2 / Milestone 2: Session Manager
+
+- Implemented `session start`, `status`, `note`, and `close`.
+- One active session per project, with explicit selection when multiple are active.
+- UTC session IDs/timestamps, local goal and note storage, and retained closed history.
+- Read-only status and audit events that omit goal and note text.
+- Tested lifecycle, ambiguous selection, invalid storage, and recoverable write failures.
+- Full suite: 106 tests passed, including Milestone 1 regressions; Ruff passed.
+
 ## Later milestones require a new scope
 
-Next candidates: local session/milestone tracking, handoff drafts, workspace
+Next candidates: milestone tracking, handoff drafts, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestone 1.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–2.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.
