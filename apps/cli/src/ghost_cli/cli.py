@@ -12,6 +12,7 @@ from rich.text import Text
 
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
+from ghost_cli.doctor import inspect_health
 from ghost_cli.handoffs import create_handoff
 from ghost_cli.next_steps import create_next_summary
 from ghost_cli.output_models import OutputType
@@ -59,6 +60,25 @@ def command_errors() -> Iterator[None]:
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+@app.command("doctor")
+def doctor_command(
+    project: Annotated[
+        str | None,
+        typer.Option("--project", help="Inspect one registered project and its registry."),
+    ] = None,
+) -> None:
+    """Check local storage health without creating, changing, or repairing files."""
+    report = inspect_health(project)
+    console.print("GHOST doctor — read-only storage health", style="bold")
+    for level, style in (("PASS", "green"), ("WARN", "yellow"), ("ERROR", "red")):
+        findings = [finding for finding in report.findings if finding.level == level]
+        console.print(f"{level} ({len(findings)})", style=style)
+        for finding in findings:
+            console.print(f"  {finding.scope} / {finding.check}: {finding.message}")
+    console.print("Storage checks only; test results and release approval are not verified.")
+    raise typer.Exit(code=1 if report.has_errors else 0)
 
 
 @app.command("init")

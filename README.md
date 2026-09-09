@@ -9,10 +9,11 @@ Milestone 2 adds local sessions with goals, timestamped notes, and retained hist
 Milestone 3 generates local context packs and AI handoff drafts from workspace records.
 Milestone 4 stores sanitized supplied outputs and generates deterministic next-step drafts.
 Milestone 5 creates review-only README, release, social, portfolio, and summary update packs.
+Milestone 6 adds read-only storage health checks with `ghost doctor`.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–5 and remains unchanged.
+Milestones 1–6 and remains unchanged.
 
 ## Setup
 
@@ -112,6 +113,22 @@ required. Recorded progress is unverified, and unknown claims stay as owner-revi
 placeholders. Review all drafts for accuracy and privacy before manually sharing.
 Nothing is published, executed, committed, or pushed.
 
+## Doctor + Release Readiness — Milestone 6
+
+```sh
+ghost doctor
+ghost doctor --project ghost
+```
+
+Doctor reports PASS/WARN/ERROR findings for global storage and registered project
+workspaces, including identity, session, and output-index consistency. `--project`
+checks only the selected workspace and required global registry. Errors exit 1;
+warnings alone exit 0. Nothing is created, repaired, or audited by doctor.
+
+Run doctor before continued milestone work, then run the tests/lint below and
+review the diff. Storage health does not verify test results or approve a release;
+CI, review, and the [release workflow](docs/release-workflow.md) still apply.
+
 ## Safety and validation
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
@@ -135,6 +152,7 @@ ghost handoff --help
 ghost output --help
 ghost next --help
 ghost update-pack --help
+ghost doctor --help
 ```
 
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.
