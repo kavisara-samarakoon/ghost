@@ -6,10 +6,11 @@ GHOST is a local-first personal AI workflow coordinator for Kavisara Samarakoon.
 The active MVP is the Python CLI and workflow engine in `apps/cli`. Milestone 1
 provides local initialization, project registration, project workspaces, and audit logs.
 Milestone 2 adds local sessions with goals, timestamped notes, and retained history.
+Milestone 3 generates local context packs and AI handoff drafts from workspace records.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–2 and remains unchanged.
+Milestones 1–3 and remains unchanged.
 
 ## Setup
 
@@ -58,6 +59,25 @@ active sessions and never writes to disk. `note` and `close` may omit the projec
 only when exactly one session is active globally. Closing retains the session
 record and notes under `<project-root>/.ghost/sessions/<session-id>/`.
 
+## Context and handoff drafts — Milestone 3
+
+For a registered project:
+
+```sh
+ghost context pack ghost
+ghost handoff codex ghost
+ghost handoff chatgpt ghost
+ghost handoff gemini ghost
+ghost handoff antigravity ghost
+```
+
+Each command writes a timestamped Markdown draft under the project's
+`.ghost/drafts/` and prints its path. Handoffs embed a fresh context snapshot;
+no prior context pack is required. Only allowlisted workspace records and active
+session notes are read—no source scan, Git inspection, AI call, upload, or command
+execution. Recognizable credentials are redacted, but review drafts before sharing;
+redaction cannot recognize every secret. Fill in the owner-approved scope manually.
+
 ## Safety and validation
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
@@ -76,6 +96,8 @@ ruff check .
 ghost --help
 ghost project --help
 ghost session --help
+ghost context --help
+ghost handoff --help
 ```
 
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.
