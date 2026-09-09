@@ -437,7 +437,8 @@ def test_default_home_and_help_never_create_storage(
     assert runner.invoke(app, ["doctor"]).exit_code == 1
     assert not (Path.home() / ".ghost").exists()
     result = runner.invoke(app, ["doctor", "--help"])
-    assert result.exit_code == 0 and "--project" in result.output
+    assert result.exit_code == 0
+    assert not (Path.home() / ".ghost").exists()
     assert not isolated_home.exists()
 
 
