@@ -13,7 +13,11 @@ from rich.text import Text
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
 from ghost_cli.handoffs import create_handoff
+from ghost_cli.next_steps import create_next_summary
+from ghost_cli.output_models import OutputType
+from ghost_cli.outputs import add_output, list_outputs
 from ghost_cli.paths import GhostError
+from ghost_cli.redaction import redact_text
 from ghost_cli.registry import add_project, find_project, load_registry
 from ghost_cli.sessions import active_sessions, add_note, close_session, start_session
 
@@ -34,6 +38,10 @@ handoff_app = typer.Typer(
 )
 app.add_typer(context_app, name="context")
 app.add_typer(handoff_app, name="handoff")
+output_app = typer.Typer(
+    help="Store sanitized output artifacts and list their records.", no_args_is_help=True
+)
+app.add_typer(output_app, name="output")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
@@ -210,6 +218,69 @@ def handoff_gemini(project_alias: str) -> None:
 def handoff_antigravity(project_alias: str) -> None:
     """Write an Antigravity read-only audit prompt."""
     show_handoff(project_alias, "antigravity")
+
+
+@output_app.command("add")
+def output_add(
+    output_type: Annotated[
+        OutputType, typer.Option("--type", help="Output source: codex or terminal.")
+    ],
+    project: Annotated[
+        str | None, typer.Option("--project", help="Registered project alias.")
+    ] = None,
+    file: Annotated[
+        Path | None, typer.Option("--file", help="UTF-8 input file; otherwise read stdin.")
+    ] = None,
+    title: Annotated[
+        str | None, typer.Option("--title", help="Optional title, up to 200 characters.")
+    ] = None,
+) -> None:
+    """Sanitize and store supplied output; no commands or model calls are executed."""
+    with command_errors():
+        output = add_output(output_type, project, file, title)
+        console.print(f"Output stored: {output}", style="green", soft_wrap=True)
+
+
+@output_app.command("list")
+def output_list(
+    project: Annotated[
+        str | None, typer.Option("--project", help="Optional project alias.")
+    ] = None,
+    limit: Annotated[
+        int, typer.Option("--limit", min=1, help="Maximum records across selected projects.")
+    ] = 10,
+) -> None:
+    """List newest output records without writing to disk or reading artifact contents."""
+    with command_errors():
+        records = list_outputs(project, limit)
+        if not records:
+            console.print(
+                "No outputs stored. Use ghost output add --type <codex|terminal> --project <alias>."
+            )
+            return
+        table = Table(title="GHOST outputs")
+        for heading in ("Project", "Output ID", "Type", "Title", "Created (UTC)", "Session ID"):
+            table.add_column(heading, overflow="fold")
+        for record in records:
+            table.add_row(
+                Text(record.project_alias),
+                Text(record.id),
+                record.type.value,
+                Text(redact_text(record.title)),
+                record.created_at.isoformat(),
+                record.active_session_id or "—",
+            )
+        console.print(table)
+
+
+@app.command("next")
+def next_summary(
+    project_alias: Annotated[str, typer.Argument(help="Required registered project alias.")],
+) -> None:
+    """Write a deterministic next-step draft from safe context and recent outputs."""
+    with command_errors():
+        output = create_next_summary(project_alias)
+        console.print(f"Next-step draft created: {output}", style="green", soft_wrap=True)
 
 
 if __name__ == "__main__":
