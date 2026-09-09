@@ -2,8 +2,9 @@
 
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
 workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
-(Local Foundation) and Milestone 2 (Session Manager). Sessions track goals and
-notes locally; they do not run workflows or connect to an AI service.
+(Local Foundation), Milestone 2 (Session Manager), and Milestone 3 (Context Packs
+and AI Handoff Generators). Sessions track goals and notes; generators write local
+Markdown drafts. Neither runs workflows nor connects to an AI service.
 
 ## Install and validate
 
@@ -19,6 +20,8 @@ ruff check .
 ghost --help
 ghost project --help
 ghost session --help
+ghost context --help
+ghost handoff --help
 ```
 
 The `ghost` executable belongs to this virtual environment. Use its full path
@@ -89,6 +92,72 @@ text, or project name. Goals and notes are stored as local plaintext, and status
 displays the goal; do not put credentials in them. Session creation is not approval
 to perform the goal.
 
+## Context packs and handoffs — Milestone 3
+
+For a registered project, with the same `GHOST_HOME` used during registration:
+
+```sh
+ghost context pack my-project
+ghost handoff codex my-project
+ghost handoff chatgpt my-project
+ghost handoff gemini my-project
+ghost handoff antigravity my-project
+```
+
+Each command prints its output path. Files have UTC timestamp prefixes and random
+suffixes, so repeated generation preserves previous drafts, even at the same time.
+The four handoffs embed a fresh context pack using the shared renderer; you do not
+need to run `context pack` first, and a handoff does not create a second standalone
+context file.
+
+| Command | Output below `.ghost/drafts/` | Purpose |
+| --- | --- | --- |
+| `context pack` | `context-packs/` | Identity, status, decisions, milestones, active session, recent notes, and a next-step placeholder |
+| `handoff codex` | `handoffs/codex/` | Codex/Astra role, branch/status reminder, scope placeholder, validation checklist, and safety rules |
+| `handoff chatgpt` | `handoffs/chatgpt/` | Current state, recorded completion, review questions, and next-task request |
+| `handoff gemini` | `handoffs/gemini/` | Gemini/NotebookLM source document with explicit do-not-execute language |
+| `handoff antigravity` | `handoffs/antigravity/` | Read-only audit instructions, inspection scope, checklists, and final report format |
+
+After loading the global registry, the generator reads only these project sources:
+
+- `.ghost/project.yaml`, `status.md`, `decisions.md`, and `milestones.yaml`.
+- `.ghost/active-session.yaml`, if present, and only the referenced active
+  session's `session.yaml` and `notes.md`.
+
+It never scans source code, historical sessions, previous drafts, or the audit
+logs for context. It does not read `.env` files, inspect Git state, execute shell
+commands, call any AI/tool provider, or upload anything. The commands shown in
+handoff checklists are text for a separately authorized workflow, not commands run
+by the generator. Workspace excerpts are fenced as untrusted source data, and
+completion claims are reported context, not independent verification.
+
+The registry and `project.yaml` must agree on alias and path. Missing optional
+status, decisions, or active notes are marked `Not recorded.`; no active pointer
+produces an explicit no-active-session section. Missing identity/milestones,
+malformed YAML, invalid active pointers, and symlink sources/directories fail
+clearly without exporting their contents. YAML aliases are unsupported. Workspace
+text and YAML sources read by the exporter are limited to 256 KiB per file; active
+metadata uses the existing session validator. Notes are sanitized first, then
+limited to their most recent 12,000 characters with an omission marker.
+
+Draft redaction reuses the audit sensitive-key rules and additionally removes
+recognizable credential assignments in prose/Markdown, bearer/basic credentials,
+URL user information, common token formats, and private-key blocks. Indented
+continuations of sensitive assignments are omitted conservatively. Original files
+are not edited. This is heuristic protection, not a guarantee that every secret
+format is detected: keep credentials out of workspace notes and inspect every
+draft before manually sharing it. Generated files use private permissions where
+supported. No generated draft authorizes implementation, modification, commit,
+push, or execution; the owner must supply the task scope.
+
+Successful context generation appends `context.pack.created` to both project and
+global audit logs. Handoffs append `handoff.created` with a `tool` field. Metadata
+contains only the project alias, relative draft path, and handoff target where
+applicable—never source text, notes, goals, or generated Markdown. Writes use the
+existing home lock. If audit appending fails after a draft is saved, the error
+identifies the preserved draft and asks you to inspect both logs before retrying;
+draft creation and audit writes are not one transaction.
+
 ## Storage
 
 Global home defaults to `~/.ghost`; `GHOST_HOME` overrides it. Relative overrides
@@ -111,6 +180,12 @@ resolve against the current directory. No `.env` discovery or loading occurs.
       notes.md
   active-session.yaml  # exists only while a session is active
   drafts/
+    context-packs/
+    handoffs/
+      codex/
+      chatgpt/
+      gemini/
+      antigravity/
   audit.jsonl
 ```
 
@@ -174,8 +249,10 @@ repeating the command can duplicate notes or target a different active session.
 `cli.py` handles presentation; `models.py` defines records; `paths.py` and
 `config.py` handle global storage; `registry.py` and `workspace.py` handle project
 registration; `audit.py` handles events. `session_models.py` validates session
-records and pointers, and `sessions.py` handles their lifecycle. Tests isolate
-both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
+records and pointers, and `sessions.py` handles their lifecycle. `context_pack.py`
+collects and renders allowlisted context; `handoffs.py` supplies tool-specific
+templates; `redaction.py` sanitizes export text using the existing audit rules.
+Tests isolate both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
 the real `~/.ghost`.
 
 This milestone has no AI API calls, voice, cloud features, database, subprocess

@@ -23,12 +23,21 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Tested lifecycle, ambiguous selection, invalid storage, and recoverable write failures.
 - Full suite: 106 tests passed, including Milestone 1 regressions; Ruff passed.
 
+## Day 3 / Milestone 3: Context Packs and AI Handoffs
+
+- Local `context pack` generation from explicit workspace sources and active notes.
+- Codex/Astra, ChatGPT, Gemini/NotebookLM, and Antigravity handoff templates.
+- Timestamped drafts, recognizable-credential redaction, and content-free audit metadata.
+- No provider calls, source-tree scans, command execution, commits, or pushes.
+- Tests cover source boundaries, redaction, output locations, safety instructions,
+  preservation, and Milestone 1–2 regressions.
+
 ## Later milestones require a new scope
 
-Next candidates: milestone tracking, handoff drafts, workspace
+Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–2.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–3.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.

@@ -108,6 +108,15 @@ def active_sessions(
     return [session for project in projects if (session := _active_session(project)) is not None]
 
 
+def active_session_for_context(project: ProjectRecord) -> SessionRecord | None:
+    """Read only the active pointer and its record, never scan historical sessions."""
+    pointer = _workspace(project) / "active-session.yaml"
+    check_regular_file(pointer)
+    if not pointer.exists():
+        return None
+    return _active_session(project)
+
+
 def _select_active(
     project_alias: str | None, home: Path, selection_hint: str
 ) -> tuple[ProjectRecord, SessionRecord]:

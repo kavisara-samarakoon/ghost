@@ -11,6 +11,8 @@ from rich.table import Table
 from rich.text import Text
 
 from ghost_cli.config import initialize_home
+from ghost_cli.context_pack import create_context_pack
+from ghost_cli.handoffs import create_handoff
 from ghost_cli.paths import GhostError
 from ghost_cli.registry import add_project, find_project, load_registry
 from ghost_cli.sessions import active_sessions, add_note, close_session, start_session
@@ -26,6 +28,12 @@ session_app = typer.Typer(
     help="Start, inspect, annotate, and close local sessions.", no_args_is_help=True
 )
 app.add_typer(session_app, name="session")
+context_app = typer.Typer(help="Generate local context pack drafts.", no_args_is_help=True)
+handoff_app = typer.Typer(
+    help="Generate local handoff drafts without calling AI services.", no_args_is_help=True
+)
+app.add_typer(context_app, name="context")
+app.add_typer(handoff_app, name="handoff")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
@@ -162,6 +170,46 @@ def session_close(
     with command_errors():
         session = close_session(project_alias)
         console.print(f"Session closed for {session.project_alias}: {session.id}", style="green")
+
+
+@context_app.command("pack")
+def context_pack(
+    project_alias: Annotated[str, typer.Argument(help="Registered project alias.")],
+) -> None:
+    """Write a sanitized Markdown context pack from safe workspace files."""
+    with command_errors():
+        output = create_context_pack(project_alias)
+        console.print(f"Context pack created: {output}", style="green", soft_wrap=True)
+
+
+def show_handoff(project_alias: str, tool: str) -> None:
+    with command_errors():
+        output = create_handoff(project_alias, tool)
+        console.print(f"Handoff draft created: {output}", style="green", soft_wrap=True)
+
+
+@handoff_app.command("codex")
+def handoff_codex(project_alias: str) -> None:
+    """Write a Codex/Astra implementation handoff draft."""
+    show_handoff(project_alias, "codex")
+
+
+@handoff_app.command("chatgpt")
+def handoff_chatgpt(project_alias: str) -> None:
+    """Write a ChatGPT current-state and next-task summary draft."""
+    show_handoff(project_alias, "chatgpt")
+
+
+@handoff_app.command("gemini")
+def handoff_gemini(project_alias: str) -> None:
+    """Write a Gemini/NotebookLM source document."""
+    show_handoff(project_alias, "gemini")
+
+
+@handoff_app.command("antigravity")
+def handoff_antigravity(project_alias: str) -> None:
+    """Write an Antigravity read-only audit prompt."""
+    show_handoff(project_alias, "antigravity")
 
 
 if __name__ == "__main__":
