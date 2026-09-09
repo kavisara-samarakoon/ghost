@@ -131,3 +131,11 @@ Use the [release workflow](docs/release-workflow.md) for focused milestone branc
 approved-file commits, PR checks, and confirmed merge/tag operations. The helpers
 live in `scripts/release` and are separate from the GHOST CLI. Automated merge/tag
 refuses to proceed without successful CI checks.
+
+## CI — Milestone 4.5
+
+[GitHub Actions CI](.github/workflows/ci.yml) checks pull requests targeting `main`
+and pushes to `main`: CLI tests/lint on Python 3.11 and 3.14, release-helper syntax
+and safety tests, and repository whitespace/bytecode hygiene. CI is validation
+only; human review and the [release workflow](docs/release-workflow.md) confirmations
+remain required before merge/tag.

@@ -149,10 +149,21 @@ so branch deletion cannot remove them. All reported checks must be completed
 successfully; pending, failed, cancelled, skipped, neutral, and unknown outcomes
 are rejected. It never uses an admin bypass or silently enables a checks override.
 
-**No CI workflows currently exist in this repository. Merge/tag therefore refuses
-by default unless the PR has successful checks supplied by configured CI.** Add
-appropriate CI in a separate approved change; local tests alone do not bypass this
-requirement. A PR with no reported checks cannot use automated merge/tag.
+PR checks now run through [GitHub Actions CI](../.github/workflows/ci.yml) on pull
+requests targeting `main` and pushes to `main`. Expect all four check results:
+`CLI (Python 3.11)`, `CLI (Python 3.14)`, `Release scripts`, and `Repository hygiene`.
+These cover CLI pytest/Ruff, Bash syntax and mocked release-safety tests, whitespace
+across the PR/push diff, and tracked Python bytecode/cache files. CI has read-only
+repository permissions and does not commit, push, merge, or tag.
+
+**Wait for all four checks to complete successfully and review the PR before typing
+the merge/tag confirmation.** No reported checks, or any reported pending, skipped,
+or failing check, still block the helper; local tests do not bypass CI. The helper
+does not enforce a fixed list of check names. If checks have not appeared yet,
+wait and inspect the PR's Actions run. A PR with no reported checks cannot use
+automated merge/tag. Repository owners must separately configure required status
+checks in branch protection/rulesets to enforce them for merges outside the helper;
+adding this workflow does not change those settings.
 
 Type the exact confirmation:
 
