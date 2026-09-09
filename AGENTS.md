@@ -118,6 +118,11 @@ GHOST CLI Milestone 1: Local Foundation includes:
 - Do not modify Git history.
 - Do not commit or push unless explicitly requested.
 
+## Release Workflow Rules
+
+- For release workflow changes, prefer `scripts/release`.
+- Do not bypass approved-file commits, PR checks, or typed confirmation.
+
 ## Validation Commands
 
 From `apps/cli`:
