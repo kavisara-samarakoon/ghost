@@ -81,3 +81,10 @@ ghost session --help
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.
 See [CLI documentation](apps/cli/README.md) for storage and recovery details and
 [the sprint plan](docs/cli-sprint-plan.md) for the milestone boundaries.
+
+## Release helpers — Milestone 2.5
+
+Use the [release workflow](docs/release-workflow.md) for focused milestone branches,
+approved-file commits, PR checks, and confirmed merge/tag operations. The helpers
+live in `scripts/release` and are separate from the GHOST CLI. Automated merge/tag
+refuses to proceed without successful CI checks.
