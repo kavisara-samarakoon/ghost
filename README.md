@@ -8,10 +8,11 @@ provides local initialization, project registration, project workspaces, and aud
 Milestone 2 adds local sessions with goals, timestamped notes, and retained history.
 Milestone 3 generates local context packs and AI handoff drafts from workspace records.
 Milestone 4 stores sanitized supplied outputs and generates deterministic next-step drafts.
+Milestone 5 creates review-only README, release, social, portfolio, and summary update packs.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–4 and remains unchanged.
+Milestones 1–5 and remains unchanged.
 
 ## Setup
 
@@ -97,6 +98,20 @@ and combines safe workspace context with recent indexed outputs in a local draft
 Neither command executes the supplied text, calls AI, or verifies claimed results.
 Environment-file inputs are refused; review sanitized artifacts before sharing.
 
+## Update packs — Milestone 5
+
+```sh
+ghost update-pack --project ghost
+```
+
+Creates six Markdown drafts under `.ghost/drafts/update-packs/<UTC-timestamp>-<suffix>/`:
+`README-update.md`, `release-notes.md`, `linkedin-post.md`, `portfolio-update.md`,
+`project-summary.md`, and `chatgpt-review-request.md`. Uses safe workspace context,
+active notes, and the five newest indexed outputs; no prior context/next draft is
+required. Recorded progress is unverified, and unknown claims stay as owner-review
+placeholders. Review all drafts for accuracy and privacy before manually sharing.
+Nothing is published, executed, committed, or pushed.
+
 ## Safety and validation
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
@@ -119,6 +134,7 @@ ghost context --help
 ghost handoff --help
 ghost output --help
 ghost next --help
+ghost update-pack --help
 ```
 
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.

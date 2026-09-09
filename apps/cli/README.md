@@ -3,7 +3,8 @@
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
 workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
 (Local Foundation), Milestone 2 (Session Manager), Milestone 3 (Context Packs
-and AI Handoff Generators), and Milestone 4 (Output Logger + Next-Step Summary).
+and AI Handoff Generators), Milestone 4 (Output Logger + Next-Step Summary),
+and Milestone 5 (Update Pack Generator).
 GHOST tracks goals and notes, stores sanitized supplied outputs, and writes local
 Markdown drafts. It does not run workflows or connect to an AI service.
 
@@ -25,6 +26,7 @@ ghost context --help
 ghost handoff --help
 ghost output --help
 ghost next --help
+ghost update-pack --help
 ```
 
 The `ghost` executable belongs to this virtual environment. Use its full path
@@ -249,6 +251,61 @@ after storage succeeds, inspect both logs before retrying to avoid duplicate
 artifacts. Missing or malformed selected artifacts stop summary generation rather
 than silently omitting evidence. Import/recovery automation remains out of scope.
 
+## Update Pack Generator — Milestone 5
+
+```sh
+ghost update-pack --project my-project
+```
+
+An explicit registered project is required; an active session is optional. The
+command prints a new `.ghost/drafts/update-packs/<UTC-timestamp>-<random-suffix>/`
+directory containing:
+
+- `README-update.md`: recorded change excerpt and suggested README section text.
+- `release-notes.md`: unversioned milestone draft with Added/Changed/Fixed review
+  slots and a reminder to supply actual validation results.
+- `linkedin-post.md`: short and longer student-portfolio wording for Kavisara,
+  with project context kept separate from suggested public claims.
+- `portfolio-update.md`: project progress and value/technical-scope/contribution
+  review slots; no inferred stack or production-readiness claim.
+- `project-summary.md`: internal state, open questions, deterministic next-step
+  checklist, safe workspace snapshot, active notes, and recent output excerpts.
+- `chatgpt-review-request.md`: a self-contained review prompt embedding the other
+  five drafts. It asks for evidence-grounded corrections and proposed next actions;
+  it does not call or upload anything to ChatGPT.
+
+Inputs use the same explicit workspace allowlist as context/next generation:
+project identity, status, decisions, milestones, active-session metadata/notes,
+the output index, and its five newest artifacts. No historical sessions, previous
+drafts, source files, project README, or audit contents are read for context. The
+existing next-step checklist is rendered afresh; `ghost next` need not run first.
+Missing optional context is explicit. Invalid identity/session/index data or missing
+selected artifacts stop generation instead of silently dropping evidence.
+
+Context/output redaction and excerpt limits are reused. Public-facing drafts use
+up to 1,200 sanitized status/goal characters; the internal summary retains the
+context snapshot and bounded recent notes/outputs. Environment paths, symlink
+sources/directories, and multiply linked source files are rejected before reading.
+Quoted records are untrusted evidence, not instructions. Versions, completion,
+capabilities, technical scope, and test outcomes are not independently verified;
+unsupported details remain review placeholders. Redaction is heuristic: remove
+private paths, personal details, and any missed credentials before sharing.
+
+All six drafts are rendered before writing. Private staging files contain only
+sanitized drafts; the complete directory is then installed under the home write
+lock. Ordinary preparation failures clean up staging without publishing a partial
+pack or changing existing packs. A process crash can leave a private
+`.update-pack-*` staging directory for manual inspection; no crash recovery is added.
+Repeated generation creates separate packs, even with the same timestamp.
+
+Success appends `update.pack.created` to project/global audits with only
+`project_alias`, relative `draft_path`, `active_session_id`, `output_count`, and
+`draft_count`. Freeform content, titles, and project names are omitted. Audit writes
+and pack publication are not one transaction: if auditing fails, the complete pack
+is preserved and the error asks you to inspect both logs before retrying.
+No existing README, workspace sources, or previous drafts are modified. Draft
+creation never approves publication, execution, modification, commit, or push.
+
 ## Storage
 
 Global home defaults to `~/.ghost`; `GHOST_HOME` overrides it. Relative overrides
@@ -277,6 +334,8 @@ resolve against the current directory. No `.env` discovery or loading occurs.
   drafts/
     context-packs/
     next-steps/
+    update-packs/
+      <UTC-timestamp>-<suffix>/  # six review-only Markdown drafts
     handoffs/
       codex/
       chatgpt/
@@ -349,7 +408,8 @@ records and pointers, and `sessions.py` handles their lifecycle. `context_pack.p
 collects and renders allowlisted context; `handoffs.py` supplies tool-specific
 templates; `redaction.py` sanitizes export text using the existing audit rules.
 `output_models.py` validates output records; `outputs.py` handles ingestion and
-index lookup; `next_steps.py` renders deterministic summaries.
+index lookup; `next_steps.py` renders deterministic summaries. `update_packs.py`
+assembles audience-specific update drafts and publishes complete private packs.
 Tests isolate both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
 the real `~/.ghost`.
 
