@@ -10,6 +10,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from ghost_cli import __version__
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
 from ghost_cli.demo import create_nexora_demo, render_demo_report
@@ -65,6 +66,12 @@ def command_errors() -> Iterator[None]:
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+@app.command("version")
+def version_command() -> None:
+    """Show the GHOST CLI version without accessing workflow storage."""
+    console.print(f"GHOST {__version__}")
 
 
 @demo_app.command("nexora")

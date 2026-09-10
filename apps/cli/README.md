@@ -5,7 +5,7 @@ workflow coordinator for Kavisara Samarakoon. This package implements Milestone 
 (Local Foundation), Milestone 2 (Session Manager), Milestone 3 (Context Packs
 and AI Handoff Generators), Milestone 4 (Output Logger + Next-Step Summary),
 Milestone 5 (Update Pack Generator), Milestone 6 (Doctor + Release Readiness),
-and Milestone 7 (Real Project Integration Demo).
+Milestone 7 (Real Project Integration Demo), and Milestone 8 (v0.1.0 Candidate Polish).
 GHOST tracks goals and notes, stores sanitized supplied outputs, and writes local
 Markdown drafts. It does not run workflows or connect to an AI service.
 
@@ -21,6 +21,8 @@ python -m pip install -e ".[dev]"
 pytest
 ruff check .
 ghost --help
+ghost version --help
+ghost version
 ghost project --help
 ghost session --help
 ghost context --help
@@ -37,7 +39,27 @@ The `ghost` executable belongs to this virtual environment. Use its full path
 from the repository root if the environment is not activated:
 `apps/cli/.venv/bin/ghost --help`.
 
+## Version and release candidate
+
+`ghost version` prints `GHOST 0.1.0` and exits 0. Version and help commands work
+without initialization and do not resolve, read, or create workflow storage.
+The version's single source is the literal `__version__` in
+`src/ghost_cli/__init__.py`; setuptools reads it when building package metadata.
+There is no runtime Git lookup, configuration read, or network version check.
+When changing that value, rebuild/reinstall the package to refresh installed metadata.
+
+Version 0.1.0 is being reviewed as a local-first, draft-first CLI candidate.
+This does not claim a published or production-ready release. The
+[candidate checklist](../../docs/release-candidate-v0.1.0.md) covers included and
+excluded features, isolated smoke testing, limitations, and human review before
+tagging. Start safely with `ghost demo nexora`, then follow its printed report;
+use the printed demo home for subsequent `ghost doctor` or session inspection.
+
 ## Commands
+
+See the [concise command overview](../../README.md#command-overview) for all command
+groups. The following registration flow is for an owner-approved project directory;
+the demo above requires no real project path.
 
 ```sh
 # Optional: keep development data separate from ~/.ghost.

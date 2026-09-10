@@ -11,10 +11,16 @@ Milestone 4 stores sanitized supplied outputs and generates deterministic next-s
 Milestone 5 creates review-only README, release, social, portfolio, and summary update packs.
 Milestone 6 adds read-only storage health checks with `ghost doctor`.
 Milestone 7 connects these features in an isolated, fictional NEXORA demo.
+Milestone 8 adds `ghost version` and a v0.1.0 release-candidate review checklist.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–7 and remains unchanged.
+Milestones 1–8 and remains unchanged.
+
+The CLI is local-first and draft-first; actions beyond preparing local records
+require human approval. See the [v0.1.0 candidate notes](docs/release-candidate-v0.1.0.md)
+for scope, limitations, validation, and manual review before tagging. The version
+number does not imply a published release or production readiness.
 
 ## Setup
 
@@ -33,18 +39,39 @@ python -m pip install -e ".[dev]"
 With the virtual environment active, from the repository root:
 
 ```sh
-export GHOST_HOME="$PWD/.ghost-dev"
-ghost init
-ghost project add ghost --path "$PWD" --name "GHOST"
-ghost project list
-ghost project show ghost
+ghost version
+ghost demo nexora
 ```
+
+The demo creates a fictional project and isolated storage in a fresh temporary
+directory. Review its printed `DEMO-REPORT.md` before taking any further action.
+It does not select or modify real project repositories. For manual registration,
+see [CLI setup commands](apps/cli/README.md#commands).
 
 `GHOST_HOME` selects the global storage directory; without it, GHOST uses
 `~/.ghost`. Each registered project gets its own `<project-root>/.ghost/`
 workspace regardless of this override. Choose a temporary project directory if
 you do not want a workspace in the repository. Project workspaces are not
 automatically added to Git's ignore rules; review their contents before staging.
+
+## Command overview
+
+| Command | Purpose |
+| --- | --- |
+| `ghost version` | Display the CLI package version without workflow storage access |
+| `ghost init` | Initialize local global storage, preserving existing files |
+| `ghost project add/list/show` | Register and inspect projects |
+| `ghost session start/status/note/close` | Track goals, notes, and retained sessions |
+| `ghost context pack <alias>` | Create an allowlisted project context draft |
+| `ghost handoff codex/chatgpt/gemini/antigravity <alias>` | Prepare a provider-specific draft |
+| `ghost output add/list` | Store sanitized supplied text or list output records |
+| `ghost next <alias>` | Draft deterministic next steps |
+| `ghost update-pack --project <alias>` | Prepare six review-only update drafts |
+| `ghost doctor [--project <alias>]` | Check storage without modifying it |
+| `ghost demo nexora` | Run a complete isolated sample workflow |
+
+Slash-separated names are alternative subcommands. Use `ghost <command> --help`
+for arguments and options.
 
 ## Session Manager — Milestone 2
 
@@ -169,6 +196,8 @@ From `apps/cli`, with the virtual environment active:
 pytest
 ruff check .
 ghost --help
+ghost version --help
+ghost version
 ghost project --help
 ghost session --help
 ghost context --help
