@@ -10,10 +10,11 @@ Milestone 3 generates local context packs and AI handoff drafts from workspace r
 Milestone 4 stores sanitized supplied outputs and generates deterministic next-step drafts.
 Milestone 5 creates review-only README, release, social, portfolio, and summary update packs.
 Milestone 6 adds read-only storage health checks with `ghost doctor`.
+Milestone 7 connects these features in an isolated, fictional NEXORA demo.
 AI integrations and workflow execution are not implemented yet.
 
 The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–6 and remains unchanged.
+Milestones 1–7 and remains unchanged.
 
 ## Setup
 
@@ -129,6 +130,29 @@ Run doctor before continued milestone work, then run the tests/lint below and
 review the diff. Storage health does not verify test results or approve a release;
 CI, review, and the [release workflow](docs/release-workflow.md) still apply.
 
+## Real Project Integration Demo — Milestone 7
+
+```sh
+ghost demo nexora
+```
+
+No setup or real project path is needed. Each run creates a private
+`ghost-demo-nexora-*` directory in the OS temporary location, containing a fresh
+`ghost-home/` and fictional `nexora-demo/` project. It uses its own storage even if
+`GHOST_HOME` is already set, and leaves that environment variable unchanged.
+
+The demo registers the sample project, seeds status/decisions/milestones, starts
+and annotates a session, stores sanitized fake Codex/Astra output, and generates
+a context pack, four handoffs, a next-step draft, and six update drafts. It runs
+doctor in-process and saves `DEMO-REPORT.md` with health findings, artifact paths,
+and manual review steps. All project claims are marked DEMO / SAMPLE; nothing
+demonstrates actual NEXORA implementation or validation.
+
+Artifacts remain available for review until manually removed or cleaned by the
+OS. Each invocation creates a separate run. Existing project paths are not
+accepted. See [the demo walkthrough](docs/demo-workflow.md) for follow-up commands,
+repeatability, and failure handling.
+
 ## Safety and validation
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
@@ -153,6 +177,7 @@ ghost output --help
 ghost next --help
 ghost update-pack --help
 ghost doctor --help
+ghost demo --help
 ```
 
 Tests use temporary GHOST homes and project directories, never the real `~/.ghost`.
