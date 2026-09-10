@@ -78,12 +78,29 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Release readiness combines doctor with manual tests/lint, help checks, diff
   review, and existing CI/release approvals. Storage health is not release approval.
 
+## Day 7 / Milestone 7: Real Project Integration Demo
+
+- Added `ghost demo nexora`, using a fresh private OS temporary directory with
+  its own global home and fictional NEXORA-style price-alert project.
+- Reuses registry, session/note, sanitized output, context, four handoff, next-step,
+  six-file update-pack, and in-process doctor functions. No shell orchestration.
+- Marks sample status, decisions, milestones, outputs, and drafts DEMO / SAMPLE;
+  sample claims are not implementation evidence or validation results.
+- Prints and saves an artifact inventory, doctor findings, and manual review steps.
+  Retains the active session and artifacts; every rerun is separate, and partial
+  failures are preserved with an incomplete report rather than resumed or overwritten.
+- Tests cover complete artifact creation, session/output/audit links, redaction,
+  isolated homes, blocked external reads/network/process calls, repeated runs,
+  unsafe temp locations, help, and failure/doctor exit behavior.
+- Documents the walkthrough in [demo-workflow.md](demo-workflow.md). No real project
+  repository or desktop integration is needed; release/CI approvals remain separate.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–6.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–7.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.

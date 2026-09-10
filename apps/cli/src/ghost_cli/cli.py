@@ -12,6 +12,7 @@ from rich.text import Text
 
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
+from ghost_cli.demo import create_nexora_demo, render_demo_report
 from ghost_cli.doctor import inspect_health
 from ghost_cli.handoffs import create_handoff
 from ghost_cli.next_steps import create_next_summary
@@ -44,6 +45,10 @@ output_app = typer.Typer(
     help="Store sanitized output artifacts and list their records.", no_args_is_help=True
 )
 app.add_typer(output_app, name="output")
+demo_app = typer.Typer(
+    help="Create isolated, temporary sample workflows for manual review.", no_args_is_help=True
+)
+app.add_typer(demo_app, name="demo")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
@@ -60,6 +65,17 @@ def command_errors() -> Iterator[None]:
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+@demo_app.command("nexora")
+def demo_nexora() -> None:
+    """Run a fictional NEXORA workflow in a fresh temporary directory; retain all drafts."""
+    with command_errors():
+        result = create_nexora_demo()
+        console.print(render_demo_report(result), soft_wrap=True)
+        console.print(f"Report saved: {redact_text(str(result.report_path))}", soft_wrap=True)
+        if result.health.has_errors:
+            raise typer.Exit(code=1)
 
 
 @app.command("doctor")
