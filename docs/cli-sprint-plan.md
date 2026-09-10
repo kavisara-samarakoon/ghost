@@ -95,12 +95,24 @@ complete milestones, readable boundaries, failure handling, and meaningful tests
 - Documents the walkthrough in [demo-workflow.md](demo-workflow.md). No real project
   repository or desktop integration is needed; release/CI approvals remain separate.
 
+## Day 8 / Milestone 8: v0.1.0 Release Candidate Polish
+
+- Added storage-independent `ghost version`, using the existing `__version__`
+  constant as the source for both CLI output and built package metadata.
+- Added [candidate notes](release-candidate-v0.1.0.md) with scope, exclusions,
+  safety limits, local validation, an isolated smoke flow, and a manual tag-review
+  checklist. The package remains 0.1.0; candidate status is a review stage.
+- Added version/help tests for absent, default, invalid, and existing storage.
+- Updated README entry points and the command overview to lead with the safe demo.
+- No new workflow capability, storage schema change, desktop change, release-script
+  change, or automatic release action. Human review and existing CI gates still apply.
+
 ## Later milestones require a new scope
 
 Next candidates: milestone tracking, workspace
 import, and interrupted-registration recovery. Define dangerous-action approval
 semantics before adding any execution capability. AI providers, GitHub automation,
-voice, cloud features, databases, and desktop integration are not part of Milestones 1–7.
+voice, cloud features, databases, and desktop integration are not part of Milestones 1–8.
 
 Every task starts with `git status --short`. Stop on uncommitted changes unless
 the owner has authorized continuing. No commits or pushes without an explicit request.

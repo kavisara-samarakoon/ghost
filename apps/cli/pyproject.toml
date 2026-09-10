@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ghost-cli"
-version = "0.1.0"
+dynamic = ["version"]
 description = "GHOST: GitHub, Handoff, Operations, Search, and Tracking"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -16,13 +16,16 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.3,<10", "ruff>=0.11,<1"]
+dev = ["build>=1.2,<2", "pytest>=8.3,<10", "ruff>=0.11,<1"]
 
 [project.scripts]
 ghost = "ghost_cli.cli:app"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "ghost_cli.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
