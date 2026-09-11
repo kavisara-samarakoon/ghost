@@ -1,5 +1,31 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 
+export interface GhostSession {
+  id: string;
+  goal_preview: string;
+  status: "active";
+  started_at: string | null;
+  note_preview: string | null;
+}
+
+export interface GhostArtifact {
+  kind: "output" | "handoff" | "context-pack" | "next-step" | "update-pack";
+  title: string;
+  relative_path: string;
+  preview: string | null;
+  created_at: string | null;
+}
+
+export interface GhostCounts {
+  // Counts describe safe metadata; null means unavailable. Sessions counts active sessions only.
+  sessions: number | null;
+  outputs: number | null;
+  handoffs: number | null;
+  context_packs: number | null;
+  next_steps: number | null;
+  update_packs: number | null;
+}
+
 export interface GhostProject {
   alias: string;
   name: string;
@@ -9,6 +35,10 @@ export interface GhostProject {
   status_preview: string | null;
   active_session_goal: string | null;
   recent_output_count: number | null;
+  active_session: GhostSession | null;
+  recent_artifacts: GhostArtifact[];
+  counts: GhostCounts;
+  warnings: string[];
 }
 
 export interface GhostSnapshot {
@@ -54,7 +84,19 @@ export async function loadGhostSnapshot(): Promise<SnapshotState> {
 
 export function selectProject(projects: GhostProject[], alias: string | null): GhostProject | undefined {
   return projects.find((project) => project.alias === alias)
-    ?? projects.find((project) => project.active_session_goal)
+    ?? projects.find((project) => project.active_session?.status === "active")
     ?? projects.find((project) => project.workspace_exists)
     ?? projects[0];
+}
+
+export function sessionGoal(project: GhostProject): string {
+  return project.active_session?.goal_preview
+    ?? (project.counts.sessions === 0 ? "No active session." : "Active session unavailable.");
+}
+
+export function artifactDate(timestamp: string | null): string {
+  if (!timestamp) return "Date unavailable";
+  const date = new Date(timestamp);
+  if (Number.isNaN(date.getTime())) return "Date unavailable";
+  return new Intl.DateTimeFormat(undefined, { dateStyle: "medium", timeStyle: "short" }).format(date);
 }

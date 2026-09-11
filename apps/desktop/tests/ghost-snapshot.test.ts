@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
-import { loadGhostSnapshot, selectProject, type GhostSnapshot } from "../src/ghost-snapshot.ts";
+import { artifactDate, loadGhostSnapshot, selectProject, sessionGoal, type GhostSnapshot, type GhostSession } from "../src/ghost-snapshot.ts";
 
 // Tauri's official IPC mock uses window. No webview or real storage is accessed.
 Object.assign(globalThis, { window: globalThis, isTauri: false });
@@ -19,6 +19,9 @@ const live: GhostSnapshot = {
     alias: "real", name: "Real project", path: "/fixture/project",
     path_exists: true, workspace_exists: true, status_preview: "Ready for review",
     active_session_goal: null, recent_output_count: 2,
+    active_session: null, recent_artifacts: [],
+    counts: { sessions: 0, outputs: 2, handoffs: 0, context_packs: 0, next_steps: 0, update_packs: 0 },
+    warnings: [],
   }],
   warnings: [],
   safety: {
@@ -79,10 +82,51 @@ test("a valid empty registry stays live instead of displaying fictional projects
 
 test("project selection respects user choice and prefers available real metadata", () => {
   const unavailable = { ...live.projects[0], alias: "missing", workspace_exists: false };
-  const active = { ...live.projects[0], alias: "active", active_session_goal: "Review release" };
+  const active = { ...live.projects[0], alias: "active", active_session: realSession };
   const projects = [unavailable, live.projects[0], active];
   assert.equal(selectProject(projects, null)?.alias, "active");
   assert.equal(selectProject(projects, "real")?.alias, "real");
   assert.equal(selectProject(projects, "missing")?.alias, "missing");
   assert.equal(selectProject(projects.slice(0, 2), null)?.alias, "real");
+});
+
+const realSession: GhostSession = {
+  id: "20260911T123456123456Z-abcdef01", goal_preview: "Review the release",
+  status: "active", started_at: "2026-09-11T12:34:56.123456Z", note_preview: "Latest note: review validation.",
+};
+
+test("real session, artifact previews, counts and warnings arrive through one read-only command", async () => {
+  Object.assign(globalThis, { isTauri: true });
+  const snapshot: GhostSnapshot = {
+    ...live,
+    projects: [{ ...live.projects[0], active_session: realSession,
+      counts: { sessions: 1, outputs: 2, handoffs: 1, context_packs: 0, next_steps: 0, update_packs: 0 },
+      recent_artifacts: [{ kind: "handoff", title: "Codex handoff", relative_path: "drafts/handoffs/codex/20260911T130000000000Z-abcdefgh.md",
+        preview: "Review the current implementation. [REDACTED]", created_at: "2026-09-11T13:00:00.000000Z" }],
+      warnings: ["One unavailable artifact was skipped."],
+    }],
+  };
+  const commands: string[] = [];
+  mockIPC((command, args) => { commands.push(command); assert.deepEqual(args, {}); return snapshot; });
+  const state = await loadGhostSnapshot();
+  assert.deepEqual(state.snapshot, snapshot);
+  assert.equal(sessionGoal(state.snapshot!.projects[0]), "Review the release");
+  assert.equal(state.snapshot!.projects[0].recent_artifacts[0].kind, "handoff");
+  assert.deepEqual(commands, ["load_ghost_snapshot"]);
+});
+
+test("absent and unavailable sessions stay distinct, with no obsolete goal substituted", () => {
+  const absent = { ...live.projects[0], active_session_goal: "Obsolete pointer goal" };
+  assert.equal(sessionGoal(absent), "No active session.");
+  const unavailable = { ...absent, counts: { ...absent.counts, sessions: null } };
+  assert.equal(sessionGoal(unavailable), "Active session unavailable.");
+  const active = { ...absent, active_session: realSession };
+  assert.equal(sessionGoal(active), realSession.goal_preview);
+  assert.equal(selectProject([absent, { ...active, alias: "active" }], null)?.alias, "active");
+});
+
+test("unknown or malformed artifact dates never crash rendering or invent a date", () => {
+  assert.equal(artifactDate(null), "Date unavailable");
+  assert.equal(artifactDate("invalid"), "Date unavailable");
+  assert.notEqual(artifactDate(realSession.started_at), "Date unavailable");
 });
