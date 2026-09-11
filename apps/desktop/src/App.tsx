@@ -8,23 +8,72 @@ import "./App.css";
  */
 
 /* -----------------------------------------------------------------------
-   Orbit visual (CSS + inline SVG, no external images)
+   Orbit visual — SVG rings, spokes, and nodes
    ----------------------------------------------------------------------- */
 
 function OrbitVisual() {
+  const cx = 210;
+  const cy = 210;
+  const r1 = 60;   /* inner dashed ring */
+  const r2 = 110;  /* middle ring */
+  const r3 = 160;  /* outer ring */
+
+  /* Four node positions: top, right, bottom, left */
+  const nodes = [
+    { x: cx, y: cy - r3 + 10 },  /* top — NEXORA */
+    { x: cx + r3 - 10, y: cy },  /* right — ARM-SecNet */
+    { x: cx, y: cy + r3 - 10 },  /* bottom — Portfolio */
+    { x: cx - r3 + 10, y: cy },  /* left — SentinelLite AI */
+  ];
+
   return (
     <div className="orbit-container" aria-hidden="true">
-      {/* Concentric orbit rings */}
-      <div className="orbit-ring orbit-ring-1" />
-      <div className="orbit-ring orbit-ring-2" />
-      <div className="orbit-ring orbit-ring-3" />
+      <svg className="orbit-svg" viewBox="0 0 420 420">
+        {/* Outer orbit ring */}
+        <circle cx={cx} cy={cy} r={r3} fill="none"
+          stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
 
-      {/* Central glowing core */}
-      <div className="orbit-core">
-        <div className="orbit-core-inner" />
-      </div>
+        {/* Middle orbit ring */}
+        <circle cx={cx} cy={cy} r={r2} fill="none"
+          stroke="rgba(77,216,232,0.08)" strokeWidth="1" />
 
-      {/* Project nodes at cardinal positions */}
+        {/* Inner dashed orbit ring */}
+        <circle cx={cx} cy={cy} r={r1} fill="none"
+          stroke="rgba(77,216,232,0.1)" strokeWidth="1"
+          strokeDasharray="4 6" />
+
+        {/* Crosshair lines through center */}
+        <line x1={cx} y1={cy - r3 - 8} x2={cx} y2={cy + r3 + 8}
+          stroke="rgba(77,216,232,0.05)" strokeWidth="1" />
+        <line x1={cx - r3 - 8} y1={cy} x2={cx + r3 + 8} y2={cy}
+          stroke="rgba(77,216,232,0.05)" strokeWidth="1" />
+
+        {/* Spoke lines from center to each node */}
+        {nodes.map((node, i) => (
+          <line key={i} x1={cx} y1={cy} x2={node.x} y2={node.y}
+            stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
+        ))}
+
+        {/* Small tick marks on outer ring at 45° angles */}
+        {[45, 135, 225, 315].map((angle) => {
+          const rad = (angle * Math.PI) / 180;
+          const ix = cx + (r3 - 6) * Math.cos(rad);
+          const iy = cy + (r3 - 6) * Math.sin(rad);
+          const ox = cx + (r3 + 6) * Math.cos(rad);
+          const oy = cy + (r3 + 6) * Math.sin(rad);
+          return (
+            <line key={angle} x1={ix} y1={iy} x2={ox} y2={oy}
+              stroke="rgba(77,216,232,0.1)" strokeWidth="1" />
+          );
+        })}
+      </svg>
+
+      {/* Central dark orb with core dot */}
+      <div className="orbit-core" />
+      <div className="orbit-core-ring" />
+      <div className="orbit-core-dot" />
+
+      {/* Project nodes */}
       <div className="orbit-node orbit-node-top orbit-node-active">
         <div className="orbit-node-dot" />
         <span className="orbit-node-label">NEXORA</span>
@@ -32,17 +81,17 @@ function OrbitVisual() {
 
       <div className="orbit-node orbit-node-right">
         <div className="orbit-node-dot" />
-        <span className="orbit-node-label">SentinelLite AI</span>
+        <span className="orbit-node-label">ARM-SecNet</span>
       </div>
 
       <div className="orbit-node orbit-node-bottom">
         <div className="orbit-node-dot" />
-        <span className="orbit-node-label">ARM-SecNet</span>
+        <span className="orbit-node-label">Portfolio</span>
       </div>
 
       <div className="orbit-node orbit-node-left">
         <div className="orbit-node-dot" />
-        <span className="orbit-node-label">Portfolio</span>
+        <span className="orbit-node-label">SentinelLite AI</span>
       </div>
 
       {/* Status info labels */}
@@ -60,16 +109,15 @@ function OrbitVisual() {
 }
 
 /* -----------------------------------------------------------------------
-   Inline SVG icons (no external dependencies)
+   Inline SVG icons
    ----------------------------------------------------------------------- */
 
-function SearchIcon() {
+function SparkleIcon() {
   return (
     <svg className="command-bar-icon" viewBox="0 0 24 24" fill="none"
       stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
       strokeLinejoin="round" aria-hidden="true">
-      <circle cx="11" cy="11" r="7" />
-      <path d="m16 16 5 5" />
+      <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83" />
     </svg>
   );
 }
@@ -84,18 +132,8 @@ function SendIcon() {
   );
 }
 
-function ChevronIcon() {
-  return (
-    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="2" strokeLinecap="round"
-      strokeLinejoin="round" aria-hidden="true">
-      <path d="m9 6 6 6-6 6" />
-    </svg>
-  );
-}
-
 /* -----------------------------------------------------------------------
-   Next action steps
+   Next action steps (timeline style)
    ----------------------------------------------------------------------- */
 
 const actionSteps = [
@@ -106,20 +144,22 @@ const actionSteps = [
 
 function ActionRow() {
   return (
-    <div className="action-row" role="list" aria-label="Next actions">
-      {actionSteps.map((step, index) => (
-        <div
-          key={step.number}
-          className={`action-step${index === 0 ? " action-step-active" : ""}`}
-          role="listitem"
-        >
-          <span className="action-step-number">{step.number}</span>
-          <span className="action-step-text">{step.label}</span>
-          <span className="action-step-arrow">
-            <ChevronIcon />
-          </span>
-        </div>
-      ))}
+    <div className="next-action-area">
+      <div className="next-action-label">Next Action</div>
+      <div className="action-row" role="list" aria-label="Next actions">
+        {actionSteps.map((step, index) => (
+          <div key={step.number} style={{ display: "contents" }}>
+            {index > 0 && <div className="action-connector" />}
+            <div
+              className={`action-step${index === 0 ? " action-step-active" : ""}`}
+              role="listitem"
+            >
+              <span className="action-step-number">{step.number}</span>
+              <span className="action-step-text">{step.label}</span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -133,23 +173,23 @@ function App() {
     <div className="command-space">
       {/* ---- Top bar ---- */}
       <div className="top-bar">
-        <div className="top-bar-left">
-          <div className="window-dots" aria-hidden="true">
-            <span className="window-dot red" />
-            <span className="window-dot yellow" />
-            <span className="window-dot green" />
-          </div>
-          <div className="brand-text">
-            <span className="brand-name">GHOST</span>
-            <span className="brand-separator" />
-            <span>Command Space</span>
-          </div>
+        <div className="window-dots" aria-hidden="true">
+          <span className="window-dot red" />
+          <span className="window-dot yellow" />
+          <span className="window-dot green" />
         </div>
-        <div className="top-bar-right">
+
+        <div className="brand-area">
+          <span className="brand-name">GHOST</span>
+        </div>
+
+        <div className="top-rule" />
+        <span className="top-title">COMMAND SPACE</span>
+        <div className="top-rule-right" />
+
+        <div className="top-status">
           <span className="status-dot" />
-          <span>Local</span>
-          <span>•</span>
-          <span>Secure</span>
+          <span>LOCAL • SECURE</span>
         </div>
       </div>
 
@@ -191,7 +231,7 @@ function App() {
       {/* ---- Command bar ---- */}
       <div className="command-bar-area">
         <div className="command-bar">
-          <SearchIcon />
+          <SparkleIcon />
           <input
             className="command-input"
             type="text"
@@ -207,9 +247,11 @@ function App() {
 
       {/* ---- Footer safety line ---- */}
       <div className="safety-footer">
+        <span className="safety-rule" />
         <span className="safety-text">
-          Local-first · Secrets protected · Manual approval required
+          Local-first &nbsp;•&nbsp; Secrets protected &nbsp;•&nbsp; Manual approval required
         </span>
+        <span className="safety-rule" />
       </div>
     </div>
   );
