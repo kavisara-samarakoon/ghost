@@ -13,16 +13,17 @@
 
   /* Design tokens */
   --text: #e7edf4;
-  --text-secondary: #9daec0;
-  --muted: #6b7d92;
-  --accent: #5ee7f6;
-  --accent-dim: #3abbc9;
-  --accent-glow: rgba(94, 231, 246, 0.12);
-  --accent-glow-strong: rgba(94, 231, 246, 0.25);
-  --surface: #0e1319;
-  --surface-elevated: #131a22;
-  --border: rgba(94, 231, 246, 0.08);
-  --border-strong: rgba(94, 231, 246, 0.18);
+  --text-secondary: #97a8bb;
+  --muted: #5d7088;
+  --accent: #4dd8e8;
+  --accent-bright: #5ee7f6;
+  --accent-dim: #3092a2;
+  --accent-glow: rgba(77, 216, 232, 0.12);
+  --accent-glow-strong: rgba(77, 216, 232, 0.22);
+  --surface: #0c1018;
+  --surface-elevated: #111820;
+  --border: rgba(77, 216, 232, 0.07);
+  --border-strong: rgba(77, 216, 232, 0.16);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
 }
 
@@ -37,7 +38,7 @@ body {
   min-height: 100dvh;
   display: grid;
   place-items: center;
-  background: #06090e;
+  background: #050810;
   overflow: hidden;
 }
 
@@ -55,7 +56,7 @@ button:focus-visible, input:focus-visible {
 }
 
 ::selection {
-  background: #2a5060;
+  background: #1d4855;
   color: #fff;
 }
 
@@ -65,7 +66,7 @@ button:focus-visible, input:focus-visible {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #2a3545;
+  background: #1e2d3d;
   border-radius: 8px;
 }
 
