@@ -1,126 +1,217 @@
 import "./App.css";
 
-const workflowSteps = [
-  {
-    number: "01",
-    title: "Context Loaded",
-    status: "Completed",
-  },
-  {
-    number: "02",
-    title: "Codex Handoff Ready",
-    status: "Ready",
-  },
-  {
-    number: "03",
-    title: "Run Validation",
-    status: "Next",
-  },
-];
+/**
+ * GHOST Command Space — single-screen frontend.
+ *
+ * Static mock data only. No AI API calls, no network requests, no shell
+ * execution, no file scanning, no .env reads, no CLI integration.
+ */
 
-const projects = ["NEXORA", "SentinelLite AI", "ARM-SecNet", "Portfolio"];
+/* -----------------------------------------------------------------------
+   Orbit visual (CSS + inline SVG, no external images)
+   ----------------------------------------------------------------------- */
+
+function OrbitVisual() {
+  return (
+    <div className="orbit-container" aria-hidden="true">
+      {/* Concentric orbit rings */}
+      <div className="orbit-ring orbit-ring-1" />
+      <div className="orbit-ring orbit-ring-2" />
+      <div className="orbit-ring orbit-ring-3" />
+
+      {/* Central glowing core */}
+      <div className="orbit-core">
+        <div className="orbit-core-inner" />
+      </div>
+
+      {/* Project nodes at cardinal positions */}
+      <div className="orbit-node orbit-node-top orbit-node-active">
+        <div className="orbit-node-dot" />
+        <span className="orbit-node-label">NEXORA</span>
+      </div>
+
+      <div className="orbit-node orbit-node-right">
+        <div className="orbit-node-dot" />
+        <span className="orbit-node-label">SentinelLite AI</span>
+      </div>
+
+      <div className="orbit-node orbit-node-bottom">
+        <div className="orbit-node-dot" />
+        <span className="orbit-node-label">ARM-SecNet</span>
+      </div>
+
+      <div className="orbit-node orbit-node-left">
+        <div className="orbit-node-dot" />
+        <span className="orbit-node-label">Portfolio</span>
+      </div>
+
+      {/* Status info labels */}
+      <span className="orbit-info orbit-info-1 orbit-info-active">
+        Context loaded
+      </span>
+      <span className="orbit-info orbit-info-2">
+        Codex handoff ready
+      </span>
+      <span className="orbit-info orbit-info-3">
+        Validation pending
+      </span>
+    </div>
+  );
+}
+
+/* -----------------------------------------------------------------------
+   Inline SVG icons (no external dependencies)
+   ----------------------------------------------------------------------- */
+
+function SearchIcon() {
+  return (
+    <svg className="command-bar-icon" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
+      strokeLinejoin="round" aria-hidden="true">
+      <circle cx="11" cy="11" r="7" />
+      <path d="m16 16 5 5" />
+    </svg>
+  );
+}
+
+function SendIcon() {
+  return (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
+      aria-hidden="true">
+      <path d="M5 12h14m-6-6 6 6-6 6" />
+    </svg>
+  );
+}
+
+function ChevronIcon() {
+  return (
+    <svg width="10" height="10" viewBox="0 0 24 24" fill="none"
+      stroke="currentColor" strokeWidth="2" strokeLinecap="round"
+      strokeLinejoin="round" aria-hidden="true">
+      <path d="m9 6 6 6-6 6" />
+    </svg>
+  );
+}
+
+/* -----------------------------------------------------------------------
+   Next action steps
+   ----------------------------------------------------------------------- */
+
+const actionSteps = [
+  { number: "01", label: "Run validation" },
+  { number: "02", label: "Review Codex output" },
+  { number: "03", label: "Prepare update pack" },
+] as const;
+
+function ActionRow() {
+  return (
+    <div className="action-row" role="list" aria-label="Next actions">
+      {actionSteps.map((step, index) => (
+        <div
+          key={step.number}
+          className={`action-step${index === 0 ? " action-step-active" : ""}`}
+          role="listitem"
+        >
+          <span className="action-step-number">{step.number}</span>
+          <span className="action-step-text">{step.label}</span>
+          <span className="action-step-arrow">
+            <ChevronIcon />
+          </span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/* -----------------------------------------------------------------------
+   Main App
+   ----------------------------------------------------------------------- */
 
 function App() {
   return (
-    <main className="ghost-app">
-      <section className="ghost-window">
-        <header className="ghost-header">
-          <div className="brand-area">
-            <div className="brand-mark">G</div>
-            <div>
-              <p className="brand-name">GHOST</p>
-              <p className="brand-subtitle">
-                Secure Personal AI Workflow Coordinator
-              </p>
-            </div>
+    <div className="command-space">
+      {/* ---- Top bar ---- */}
+      <div className="top-bar">
+        <div className="top-bar-left">
+          <div className="window-dots" aria-hidden="true">
+            <span className="window-dot red" />
+            <span className="window-dot yellow" />
+            <span className="window-dot green" />
           </div>
-
-          <div className="header-center">
-            <span></span>
-            <p>COMMAND SPACE</p>
-            <span></span>
+          <div className="brand-text">
+            <span className="brand-name">GHOST</span>
+            <span className="brand-separator" />
+            <span>Command Space</span>
           </div>
+        </div>
+        <div className="top-bar-right">
+          <span className="status-dot" />
+          <span>Local</span>
+          <span>•</span>
+          <span>Secure</span>
+        </div>
+      </div>
 
-          <div className="secure-status">
-            <span className="status-dot"></span>
-            LOCAL · SECURE
-          </div>
-        </header>
-
-        <section className="content-grid">
-          <section className="intro-panel">
-            <div className="page-kicker">CURRENT SESSION</div>
-
+      {/* ---- Main content: greeting + orbit ---- */}
+      <div className="main-content">
+        <div className="left-panel">
+          <div className="greeting">
             <h1>
-              Good morning,
+              Good evening,
               <br />
               Kavisara
             </h1>
-
-            <p className="intro-copy">
+            <p className="greeting-subtitle">
               Your secure AI workflow coordinator is ready.
             </p>
-
-            <div className="session-card">
-              <p className="card-label">ACTIVE PROJECT</p>
-              <h2>NEXORA</h2>
-              <p>Add wishlist price alert MVP</p>
-
-              <div className="progress-pill">
-                <span></span>
-                IN PROGRESS
-              </div>
-            </div>
-          </section>
-
-          <section className="orbit-panel">
-            <div className="orbit-core">
-              <div className="core-glow"></div>
-            </div>
-
-            {projects.map((project, index) => (
-              <div key={project} className={`project-node node-${index + 1}`}>
-                <span></span>
-                {project}
-              </div>
-            ))}
-
-            <div className="orbit-ring ring-one"></div>
-            <div className="orbit-ring ring-two"></div>
-          </section>
-        </section>
-
-        <section className="workflow-strip">
-          <div className="strip-title">NEXT ACTION</div>
-
-          <div className="workflow-steps">
-            {workflowSteps.map((step) => (
-              <article key={step.number} className="workflow-step">
-                <span className="step-number">{step.number}</span>
-                <div>
-                  <h3>{step.title}</h3>
-                  <p>{step.status}</p>
-                </div>
-              </article>
-            ))}
           </div>
-        </section>
 
-        <section className="command-bar">
-          <span className="command-spark">✦</span>
-          <p>Ask GHOST or type a command...</p>
-          <button type="button">➜</button>
-        </section>
+          <div className="session-block">
+            <span className="session-label">Current Session</span>
+            <span className="session-project">NEXORA</span>
+            <span className="session-goal">
+              Add wishlist price alert MVP
+            </span>
+            <span className="status-pill">
+              <span className="status-pill-dot" />
+              In Progress
+            </span>
+          </div>
+        </div>
 
-        <footer className="security-footer">
-          <span>Local-first</span>
-          <span>•</span>
-          <span>Secrets protected</span>
-          <span>•</span>
-          <span>Manual approval required</span>
-        </footer>
-      </section>
-    </main>
+        <div className="right-panel">
+          <OrbitVisual />
+        </div>
+      </div>
+
+      {/* ---- Next action row ---- */}
+      <ActionRow />
+
+      {/* ---- Command bar ---- */}
+      <div className="command-bar-area">
+        <div className="command-bar">
+          <SearchIcon />
+          <input
+            className="command-input"
+            type="text"
+            placeholder="Ask GHOST or type a command..."
+            aria-label="Command input"
+            readOnly
+          />
+          <button className="command-send" type="button" aria-label="Send">
+            <SendIcon />
+          </button>
+        </div>
+      </div>
+
+      {/* ---- Footer safety line ---- */}
+      <div className="safety-footer">
+        <span className="safety-text">
+          Local-first · Secrets protected · Manual approval required
+        </span>
+      </div>
+    </div>
   );
 }
 
