@@ -1,17 +1,26 @@
+import { useEffect, useState } from "react";
+import { loadGhostSnapshot, selectProject, type SnapshotState } from "./ghost-snapshot";
 import "./App.css";
 
 /**
  * GHOST Command Space — single-screen frontend.
  *
- * Static mock data only. No AI API calls, no network requests, no shell
- * execution, no file scanning, no .env reads, no CLI integration.
+ * Local metadata through a read-only Tauri command, with static browser preview.
  */
 
 /* -----------------------------------------------------------------------
    Orbit visual — SVG rings, spokes, and nodes
    ----------------------------------------------------------------------- */
 
-function OrbitVisual() {
+const previewProjects = ["NEXORA", "ARM-SecNet", "Portfolio", "SentinelLite AI"];
+const nodePositions = ["top", "right", "bottom", "left"];
+
+function OrbitVisual({ projects, live, projectCount, outputCount }: {
+  projects: string[];
+  live: boolean;
+  projectCount: number;
+  outputCount: number | null;
+}) {
   const cx = 210;
   const cy = 210;
   const r1 = 60;   /* inner dashed ring */
@@ -20,15 +29,15 @@ function OrbitVisual() {
 
   /* Four node positions: top, right, bottom, left */
   const nodes = [
-    { x: cx, y: cy - r3 + 10 },  /* top — NEXORA */
-    { x: cx + r3 - 10, y: cy },  /* right — ARM-SecNet */
-    { x: cx, y: cy + r3 - 10 },  /* bottom — Portfolio */
-    { x: cx - r3 + 10, y: cy },  /* left — SentinelLite AI */
+    { x: cx, y: cy - r3 + 10 },
+    { x: cx + r3 - 10, y: cy },
+    { x: cx, y: cy + r3 - 10 },
+    { x: cx - r3 + 10, y: cy },
   ];
 
   return (
-    <div className="orbit-container" aria-hidden="true">
-      <svg className="orbit-svg" viewBox="0 0 420 420">
+    <div className="orbit-container" role="group" aria-label="Project overview">
+      <svg className="orbit-svg" viewBox="0 0 420 420" aria-hidden="true">
         {/* Outer orbit ring */}
         <circle cx={cx} cy={cy} r={r3} fill="none"
           stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
@@ -49,7 +58,7 @@ function OrbitVisual() {
           stroke="rgba(77,216,232,0.05)" strokeWidth="1" />
 
         {/* Spoke lines from center to each node */}
-        {nodes.map((node, i) => (
+        {nodes.slice(0, projects.length).map((node, i) => (
           <line key={i} x1={cx} y1={cy} x2={node.x} y2={node.y}
             stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
         ))}
@@ -74,35 +83,22 @@ function OrbitVisual() {
       <div className="orbit-core-dot" />
 
       {/* Project nodes */}
-      <div className="orbit-node orbit-node-top orbit-node-active">
-        <div className="orbit-node-dot" />
-        <span className="orbit-node-label">NEXORA</span>
-      </div>
-
-      <div className="orbit-node orbit-node-right">
-        <div className="orbit-node-dot" />
-        <span className="orbit-node-label">ARM-SecNet</span>
-      </div>
-
-      <div className="orbit-node orbit-node-bottom">
-        <div className="orbit-node-dot" />
-        <span className="orbit-node-label">Portfolio</span>
-      </div>
-
-      <div className="orbit-node orbit-node-left">
-        <div className="orbit-node-dot" />
-        <span className="orbit-node-label">SentinelLite AI</span>
-      </div>
+      {projects.slice(0, 4).map((name, index) => (
+        <div key={index} className={`orbit-node orbit-node-${nodePositions[index]}${index === 0 ? " orbit-node-active" : ""}`}>
+          <div className="orbit-node-dot" />
+          <span className="orbit-node-label" title={name}>{name}</span>
+        </div>
+      ))}
 
       {/* Status info labels */}
       <span className="orbit-info orbit-info-1 orbit-info-active">
-        Context loaded
+        {live ? `${projectCount} registered project${projectCount === 1 ? "" : "s"}` : "Context loaded"}
       </span>
       <span className="orbit-info orbit-info-2">
-        Codex handoff ready
+        {live ? "Read-only snapshot" : "Codex handoff ready"}
       </span>
       <span className="orbit-info orbit-info-3">
-        Validation pending
+        {live ? (outputCount === null ? "Output count unavailable" : `${outputCount} indexed outputs`) : "Validation pending"}
       </span>
     </div>
   );
@@ -142,10 +138,10 @@ const actionSteps = [
   { number: "03", label: "Prepare update pack" },
 ] as const;
 
-function ActionRow() {
+function ActionRow({ live }: { live: boolean }) {
   return (
     <div className="next-action-area">
-      <div className="next-action-label">Next Action</div>
+      <div className="next-action-label">{live ? "Suggested workflow • manual steps" : "Next Action"}</div>
       <div className="action-row" role="list" aria-label="Next actions">
         {actionSteps.map((step, index) => (
           <div key={step.number} style={{ display: "contents" }}>
@@ -169,6 +165,29 @@ function ActionRow() {
    ----------------------------------------------------------------------- */
 
 function App() {
+  const [{ snapshot, notice }, setSnapshot] = useState<SnapshotState>({ snapshot: null, notice: null });
+  const [selectedAlias, setSelectedAlias] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void loadGhostSnapshot().then((state) => {
+      if (!cancelled) setSnapshot(state);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const live = snapshot !== null;
+  const project = selectProject(snapshot?.projects ?? [], selectedAlias);
+  const orbitProjects = snapshot
+    ? [project, ...snapshot.projects.filter((item) => item.alias !== project?.alias)]
+      .filter((item) => item !== undefined).map((item) => item.name)
+    : previewProjects;
+  const sessionGoal = project?.active_session_goal ?? "Session goal unavailable in this read-only snapshot.";
+  const projectStatus = !project ? "No registered projects"
+    : !project.path_exists ? "Project unavailable"
+    : !project.workspace_exists ? "Workspace unavailable"
+    : "Read-only";
+
   return (
     <div className="command-space">
       {/* ---- Top bar ---- */}
@@ -187,9 +206,9 @@ function App() {
         <span className="top-title">COMMAND SPACE</span>
         <div className="top-rule-right" />
 
-        <div className="top-status">
+        <div className="top-status" role="status">
           <span className="status-dot" />
-          <span>LOCAL • SECURE</span>
+          <span>{live ? "Live local read-only" : "Static preview"}</span>
         </div>
       </div>
 
@@ -203,30 +222,48 @@ function App() {
               Kavisara
             </h1>
             <p className="greeting-subtitle">
-              Your secure AI workflow coordinator is ready.
+              {live
+                ? `${snapshot.project_count} registered project${snapshot.project_count === 1 ? "" : "s"} in your local GHOST workspace.`
+                : "Your secure AI workflow coordinator is ready."}
             </p>
           </div>
 
           <div className="session-block">
-            <span className="session-label">Current Session</span>
-            <span className="session-project">NEXORA</span>
+            <span className="session-label">{live && !project?.active_session_goal ? "Local project" : "Current Session"}</span>
+            {live && project ? (
+              <select className="session-project project-select" aria-label="Current project"
+                value={project.alias} onChange={(event) => setSelectedAlias(event.target.value)}>
+                {snapshot.projects.map((item) => <option key={item.alias} value={item.alias}>{item.name}</option>)}
+              </select>
+            ) : <span className="session-project">{live ? "No registered projects" : "NEXORA"}</span>}
             <span className="session-goal">
-              Add wishlist price alert MVP
+              {live ? (project ? sessionGoal : "Your local registry is empty.") : "Add wishlist price alert MVP"}
             </span>
+            {live && project?.status_preview && (
+              <span className="project-status-preview" title={project.status_preview}>{project.status_preview}</span>
+            )}
             <span className="status-pill">
               <span className="status-pill-dot" />
-              In Progress
+              {live ? projectStatus : "In Progress"}
             </span>
+            {notice && <span className="snapshot-notice" role="status">{notice}</span>}
+            {snapshot && snapshot.warnings.length > 0 && (
+              <details className="snapshot-notice">
+                <summary>{snapshot.warnings.length} snapshot notice{snapshot.warnings.length === 1 ? "" : "s"}</summary>
+                <ul>{snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
+              </details>
+            )}
           </div>
         </div>
 
         <div className="right-panel">
-          <OrbitVisual />
+          <OrbitVisual projects={orbitProjects} live={live}
+            projectCount={snapshot?.project_count ?? 4} outputCount={project?.recent_output_count ?? null} />
         </div>
       </div>
 
       {/* ---- Next action row ---- */}
-      <ActionRow />
+      <ActionRow live={live} />
 
       {/* ---- Command bar ---- */}
       <div className="command-bar-area">
@@ -235,11 +272,11 @@ function App() {
           <input
             className="command-input"
             type="text"
-            placeholder="Ask GHOST or type a command..."
+            placeholder={live ? "Read-only snapshot • commands are unavailable" : "Ask GHOST or type a command..."}
             aria-label="Command input"
             readOnly
           />
-          <button className="command-send" type="button" aria-label="Send">
+          <button className="command-send" type="button" aria-label="Send unavailable" disabled>
             <SendIcon />
           </button>
         </div>
@@ -249,7 +286,7 @@ function App() {
       <div className="safety-footer">
         <span className="safety-rule" />
         <span className="safety-text">
-          Local-first &nbsp;•&nbsp; Secrets protected &nbsp;•&nbsp; Manual approval required
+          {live ? "Local metadata only • No commands • No file writes" : "Local-first • Secrets protected • Manual approval required"}
         </span>
         <span className="safety-rule" />
       </div>
