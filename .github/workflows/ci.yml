@@ -41,6 +41,28 @@ jobs:
       - name: Lint CLI
         run: ruff check .
 
+  desktop:
+    name: Desktop frontend build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: apps/desktop
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: pnpm/action-setup@v6
+        with:
+          version: "12.3.4"
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "24"
+      - name: Install desktop dependencies
+        run: pnpm install --frozen-lockfile
+      - name: Build desktop frontend
+        run: pnpm build
+
   release-scripts:
     name: Release scripts
     runs-on: ubuntu-latest
