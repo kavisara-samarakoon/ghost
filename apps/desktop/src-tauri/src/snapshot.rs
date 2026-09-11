@@ -1,5 +1,8 @@
-//! Read only the registry and fixed metadata names. Never resolve paths from metadata files.
+//! Read allowlisted local metadata without modifying storage or executing workflows.
+mod artifacts;
+mod names;
 mod reader;
+mod session;
 mod text;
 
 use reader::{Directory, ReadBudget};
@@ -41,6 +44,22 @@ struct ProjectSnapshot {
     status_preview: Option<String>,
     active_session_goal: Option<String>,
     recent_output_count: Option<usize>,
+    active_session: Option<session::Session>,
+    recent_artifacts: Vec<artifacts::Artifact>,
+    counts: Counts,
+    warnings: Vec<String>,
+}
+
+#[derive(Default, Serialize)]
+struct Counts {
+    // Only the pointed-to active session is in scope: this is 0, 1, or unknown.
+    sessions: Option<usize>,
+    outputs: Option<usize>,
+    handoffs: Option<usize>,
+    context_packs: Option<usize>,
+    next_steps: Option<usize>,
+    // Number of safe pack directories, not the number of documents inside them.
+    update_packs: Option<usize>,
 }
 
 #[derive(Deserialize)]
@@ -54,26 +73,6 @@ struct Project {
     alias: String,
     name: String,
     path: PathBuf,
-}
-
-#[derive(Deserialize)]
-struct ActiveSession {
-    id: String,
-    project_alias: String,
-    // CLI v0.1.0 only writes a pointer. Do not follow it into sessions/.
-    goal: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct OutputIndex {
-    version: u32,
-    outputs: Vec<OutputEntry>,
-}
-
-#[derive(Deserialize)]
-struct OutputEntry {
-    id: String,
-    project_alias: String,
 }
 
 impl GhostSnapshot {
@@ -148,7 +147,7 @@ pub fn load_from_environment() -> GhostSnapshot {
 }
 
 fn warn(warnings: &mut Vec<String>, scope: &str, message: &str) {
-    warnings.push(format!("{scope}: {message}"));
+    warnings.push(format!("{}: {message}", text::redact(scope)));
 }
 
 fn read_yaml<T: DeserializeOwned>(
@@ -266,6 +265,18 @@ fn load_project(
     budget: &mut ReadBudget,
     warnings: &mut Vec<String>,
 ) -> ProjectSnapshot {
+    let mut local_warnings = Vec::new();
+    let mut result = read_project(project, budget, &mut local_warnings);
+    warnings.extend(local_warnings.iter().cloned());
+    result.warnings = local_warnings;
+    result
+}
+
+fn read_project(
+    project: &Project,
+    budget: &mut ReadBudget,
+    warnings: &mut Vec<String>,
+) -> ProjectSnapshot {
     let mut result = ProjectSnapshot {
         alias: project.alias.clone(),
         name: preview(&project.name).unwrap_or_else(|| project.alias.clone()),
@@ -275,6 +286,10 @@ fn load_project(
         status_preview: None,
         active_session_goal: None,
         recent_output_count: None,
+        active_session: None,
+        recent_artifacts: Vec::new(),
+        counts: Counts::default(),
+        warnings: Vec::new(),
     };
     let root = match Directory::open(&project.path) {
         Ok(Some(root)) => root,
@@ -320,95 +335,15 @@ fn load_project(
         Ok(text) => result.status_preview = text.as_deref().and_then(preview),
         Err(error) => warn(warnings, &format!("{} status.md", project.alias), error),
     }
-    result.active_session_goal = session_goal(&workspace, project, budget, warnings);
-    result.recent_output_count = output_count(&workspace, project, budget, warnings);
+    let (session, session_count) = session::load(&workspace, project, budget, warnings);
+    let (artifacts, mut counts) = artifacts::load(&workspace, project, budget, warnings);
+    counts.sessions = session_count;
+    result.active_session_goal = session.as_ref().map(|session| session.goal_preview.clone());
+    result.recent_output_count = counts.outputs;
+    result.active_session = session;
+    result.recent_artifacts = artifacts;
+    result.counts = counts;
     result
-}
-
-fn valid_session_id(id: &str) -> bool {
-    let bytes = id.as_bytes();
-    bytes.len() == 31
-        && bytes[8] == b'T'
-        && &bytes[21..23] == b"Z-"
-        && bytes[..8]
-            .iter()
-            .chain(&bytes[9..21])
-            .all(u8::is_ascii_digit)
-        && bytes[23..]
-            .iter()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(b))
-}
-
-fn session_goal(
-    workspace: &Directory,
-    project: &Project,
-    budget: &mut ReadBudget,
-    warnings: &mut Vec<String>,
-) -> Option<String> {
-    let scope = format!("{} active-session.yaml", project.alias);
-    match read_yaml::<ActiveSession>(workspace, "active-session.yaml", budget) {
-        Ok(Some(pointer))
-            if pointer.project_alias == project.alias && valid_session_id(&pointer.id) =>
-        {
-            let goal = pointer.goal.as_deref().and_then(preview);
-            if goal.is_none() {
-                warn(warnings, &scope, "Active session pointer found; its goal is outside the snapshot read allowlist.");
-            }
-            goal
-        }
-        Ok(Some(_)) => {
-            warn(
-                warnings,
-                &scope,
-                "Invalid session pointer; goal unavailable.",
-            );
-            None
-        }
-        Ok(None) => None,
-        Err(error) => {
-            warn(warnings, &scope, error);
-            None
-        }
-    }
-}
-
-fn output_count(
-    workspace: &Directory,
-    project: &Project,
-    budget: &mut ReadBudget,
-    warnings: &mut Vec<String>,
-) -> Option<usize> {
-    let mut read = || -> Result<usize, &'static str> {
-        let Some(outputs) = workspace.child("outputs")? else {
-            return Ok(0);
-        };
-        let Some(index) = read_yaml::<OutputIndex>(&outputs, "index.yaml", budget)? else {
-            return Ok(0);
-        };
-        let mut ids = HashSet::new();
-        if index.version != 1
-            || index.outputs.iter().any(|entry| {
-                entry.project_alias != project.alias
-                    || entry.id.is_empty()
-                    || !ids.insert(&entry.id)
-            })
-        {
-            return Err("Invalid output index; count unavailable.");
-        }
-        // Count index records only. Output paths and output contents are never opened.
-        Ok(index.outputs.len())
-    };
-    match read() {
-        Ok(count) => Some(count),
-        Err(error) => {
-            warn(
-                warnings,
-                &format!("{} outputs/index.yaml", project.alias),
-                error,
-            );
-            None
-        }
-    }
 }
 
 #[cfg(all(test, unix))]

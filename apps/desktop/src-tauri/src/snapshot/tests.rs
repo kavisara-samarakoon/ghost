@@ -60,7 +60,56 @@ impl Fixture {
     fn read(&self) -> GhostSnapshot {
         load(&self.home)
     }
+
+    fn directory(&self) -> Directory {
+        Directory::open(&self.project)
+            .unwrap()
+            .unwrap()
+            .child(".ghost")
+            .unwrap()
+            .unwrap()
+    }
+
+    fn artifact(&self, path: &str, content: &str) {
+        fs::create_dir_all(self.workspace.join(path).parent().unwrap()).unwrap();
+        self.write(path, content);
+    }
+
+    fn session(&self, goal: &str) {
+        self.write(
+            "active-session.yaml",
+            &format!("id: {SESSION_ID}\nproject_alias: example\n"),
+        );
+        let record = serde_json::json!({"id": SESSION_ID, "project_alias": "example", "goal": goal,
+            "status": "active", "started_at": "2026-09-11T12:34:56.123456+00:00", "closed_at": null});
+        self.artifact(
+            &format!("sessions/{SESSION_ID}/session.yaml"),
+            &serde_yaml_ng::to_string(&record).unwrap(),
+        );
+        self.write(
+            &format!("sessions/{SESSION_ID}/notes.md"),
+            "# Session notes\n\nReady for review.",
+        );
+    }
+
+    fn output(&self, number: usize, kind: &str) -> serde_json::Value {
+        let id = format!("20260911T123456{number:06}Z-{kind}-output-{number:08}");
+        let path = format!("outputs/{kind}/{id}.md");
+        self.artifact(&path, "# Stored evidence\n\nRecorded output only.");
+        serde_json::json!({"id": id, "project_alias": "example", "type": kind, "path": path,
+            "title": format!("Reviewed {kind} output {number}")})
+    }
+
+    fn output_index(&self, records: Vec<serde_json::Value>) {
+        self.artifact(
+            "outputs/index.yaml",
+            &serde_yaml_ng::to_string(&serde_json::json!({"version": 1, "outputs": records}))
+                .unwrap(),
+        );
+    }
 }
+
+const SESSION_ID: &str = "20260911T123456123456Z-abcdef01";
 
 #[test]
 fn environment_resolution_never_initializes_or_falls_back_from_invalid_override() {
@@ -125,7 +174,7 @@ fn absent_storage_and_invalid_registry_fall_back_without_writes() {
 }
 
 #[test]
-fn cli_records_load_but_active_pointer_and_output_paths_are_never_followed() {
+fn malformed_session_and_output_metadata_are_not_exposed() {
     let fixture = Fixture::new();
     fixture.write(
         "active-session.yaml",
@@ -172,8 +221,8 @@ fn cli_records_load_but_active_pointer_and_output_paths_are_never_followed() {
         .unwrap()
         .contains("Workspace initialized."));
     assert_eq!(project.active_session_goal, None);
-    assert_eq!(project.recent_output_count, Some(1));
-    assert!(snapshot.warnings[0].contains("goal is outside"));
+    assert_eq!(project.recent_output_count, None);
+    assert_eq!(snapshot.warnings.len(), 2);
     let json = serde_json::to_value(&snapshot).unwrap();
     assert!(!json.to_string().contains("forbidden-"));
     for value in json["safety"].as_object().unwrap().values() {
@@ -277,7 +326,7 @@ fn symlinked_storage_project_ancestor_workspace_and_outputs_are_rejected() {
 #[test]
 fn open_directory_stays_anchored_when_its_path_is_replaced() {
     let fixture = Fixture::new();
-    let directory = Directory::open(&fixture.workspace).unwrap().unwrap();
+    let directory = fixture.directory();
     fs::rename(&fixture.workspace, fixture.root.join("original")).unwrap();
     fs::create_dir(&fixture.workspace).unwrap();
     fixture.write("status.md", "replacement-marker");
@@ -316,7 +365,7 @@ fn size_utf8_nonregular_permissions_and_total_budget_limits_are_enforced() {
     assert_eq!(fixture.read().projects[0].status_preview, None);
     fs::set_permissions(&status, fs::Permissions::from_mode(0o600)).unwrap();
     fs::write(&status, vec![b'a'; reader::MAX_FILE_BYTES]).unwrap();
-    let directory = Directory::open(&fixture.workspace).unwrap().unwrap();
+    let directory = fixture.directory();
     let mut budget = ReadBudget::default();
     for _ in 0..16 {
         assert!(directory.read("status.md", &mut budget).is_ok());
@@ -326,7 +375,8 @@ fn size_utf8_nonregular_permissions_and_total_budget_limits_are_enforced() {
     assert!(directory
         .read("sessions/session.yaml", &mut ReadBudget::default())
         .is_err());
-    assert!(directory.child("sessions").is_err());
+    assert!(directory.child("../sessions").is_err());
+    assert!(directory.list(&mut ReadBudget::default()).is_err());
 }
 
 #[test]
@@ -366,4 +416,449 @@ fn display_text_is_bounded_and_redacted_before_truncation() {
     assert!(json.contains("Ready for review."));
     assert!(json.contains("[REDACTED]"));
     assert_eq!(preview(&"é".repeat(500)).unwrap().chars().count(), 241);
+}
+
+#[test]
+fn active_session_loads_validated_record_and_recent_redacted_notes_only() {
+    let fixture = Fixture::new();
+    fixture.session("Review the release with ghp_abcdefghijklmnop");
+    fixture.write(
+        &format!("sessions/{SESSION_ID}/notes.md"),
+        &format!(
+            "# Notes\n{}\nAPI_KEY: session-secret-marker\nLatest note: review the release.",
+            "Older note.\n".repeat(100)
+        ),
+    );
+    fixture.artifact(
+        "sessions/20260101T000000000000Z-aaaaaaaa/session.yaml",
+        "malformed-history-marker",
+    );
+    let snapshot = fixture.read();
+    let project = &snapshot.projects[0];
+    let session = project.active_session.as_ref().unwrap();
+    assert_eq!(session.id, SESSION_ID);
+    assert_eq!(session.status, "active");
+    assert_eq!(
+        session.started_at.as_deref(),
+        Some("2026-09-11T12:34:56.123456Z")
+    );
+    assert_eq!(project.counts.sessions, Some(1));
+    assert_eq!(
+        project.active_session_goal.as_deref(),
+        Some(session.goal_preview.as_str())
+    );
+    let notes = session.note_preview.as_ref().unwrap();
+    assert!(notes.chars().count() <= 601);
+    assert!(notes.contains("Latest note"));
+    assert!(snapshot.warnings.is_empty());
+    let json = serde_json::to_string(&snapshot).unwrap();
+    for marker in [
+        "session-secret-marker",
+        "ghp_abcdefghijklmnop",
+        "malformed-history-marker",
+    ] {
+        assert!(!json.contains(marker));
+    }
+}
+
+#[test]
+fn session_traversal_stale_pointers_and_mismatched_identity_are_rejected() {
+    let fixture = Fixture::new();
+    fixture.session("Real goal");
+    for id in [
+        "../outside",
+        "/tmp/session",
+        ".env",
+        "nested/session",
+        "..\\outside",
+        "20260911T123456123456Z-abcdef01/../other",
+    ] {
+        fixture.write(
+            "active-session.yaml",
+            &format!("id: '{id}'\nproject_alias: example\n"),
+        );
+        let snapshot = fixture.read();
+        assert!(snapshot.projects[0].active_session.is_none());
+        assert_eq!(snapshot.projects[0].counts.sessions, None);
+        assert!(!snapshot.warnings.is_empty());
+    }
+    for (field, value) in [
+        ("id", "wrong-id"),
+        ("project_alias", "other"),
+        ("status", "closed"),
+        ("goal", " "),
+    ] {
+        fixture.session("Real goal");
+        let mut record = serde_json::json!({"id": SESSION_ID, "project_alias": "example", "goal": "Real goal", "status": "active"});
+        record[field] = value.into();
+        fixture.write(
+            &format!("sessions/{SESSION_ID}/session.yaml"),
+            &serde_yaml_ng::to_string(&record).unwrap(),
+        );
+        assert!(fixture.read().projects[0].active_session.is_none());
+    }
+    fixture.session("Real goal");
+    fs::remove_file(
+        fixture
+            .workspace
+            .join(format!("sessions/{SESSION_ID}/session.yaml")),
+    )
+    .unwrap();
+    assert!(fixture.read().warnings[0].contains("missing"));
+}
+
+#[test]
+fn missing_notes_or_invalid_start_time_keep_the_valid_session_with_warnings() {
+    let fixture = Fixture::new();
+    fixture.session("Real goal");
+    fixture.write(&format!("sessions/{SESSION_ID}/session.yaml"), &format!("id: {SESSION_ID}\nproject_alias: example\ngoal: Real goal\nstatus: active\nstarted_at: private-invalid-date-marker"));
+    fs::remove_file(
+        fixture
+            .workspace
+            .join(format!("sessions/{SESSION_ID}/notes.md")),
+    )
+    .unwrap();
+    let snapshot = fixture.read();
+    let session = snapshot.projects[0].active_session.as_ref().unwrap();
+    assert!(session.started_at.is_none() && session.note_preview.is_none());
+    assert_eq!(snapshot.warnings.len(), 2);
+    assert!(!serde_json::to_string(&snapshot)
+        .unwrap()
+        .contains("private-invalid-date-marker"));
+}
+
+#[test]
+fn all_artifact_categories_load_metadata_previews_and_counts_without_writes() {
+    let fixture = Fixture::new();
+    let outputs = vec![fixture.output(1, "codex"), fixture.output(2, "terminal")];
+    fixture.output_index(outputs);
+    let filename = "20260911T130000000000Z-abcdefgh.md";
+    fixture.artifact(
+        &format!("drafts/context-packs/{filename}"),
+        "# GHOST Context Pack\n\nRecorded context.",
+    );
+    fixture.artifact(
+        &format!("drafts/next-steps/{filename}"),
+        "# GHOST Next-Step Summary\n\nReview validation.",
+    );
+    for target in ["codex", "chatgpt", "gemini", "antigravity"] {
+        fixture.artifact(
+            &format!("drafts/handoffs/{target}/{filename}"),
+            &format!("# {target} handoff\n\nReady for review."),
+        );
+    }
+    for filename in ["README-update.md", "release-notes.md"] {
+        fixture.artifact(
+            &format!("drafts/update-packs/{SESSION_ID}/{filename}"),
+            "# Update draft\n\nReview before sharing.",
+        );
+    }
+    fixture.artifact("audit.jsonl", "unchanged-audit-marker");
+    let before = fixture_inventory(&fixture.root);
+    let snapshot = fixture.read();
+    let project = &snapshot.projects[0];
+    assert_eq!(project.counts.sessions, Some(0));
+    assert_eq!(project.counts.outputs, Some(2));
+    assert_eq!(project.counts.handoffs, Some(4));
+    assert_eq!(project.counts.context_packs, Some(1));
+    assert_eq!(project.counts.next_steps, Some(1));
+    assert_eq!(project.counts.update_packs, Some(1));
+    assert_eq!(project.recent_artifacts.len(), 10);
+    assert!(project
+        .recent_artifacts
+        .iter()
+        .all(|artifact| artifact.preview.is_some() && artifact.created_at.is_some()));
+    assert!(project
+        .recent_artifacts
+        .iter()
+        .any(|artifact| artifact.title == "Reviewed terminal output 2"));
+    assert!(snapshot.warnings.is_empty());
+    assert_eq!(fixture_inventory(&fixture.root), before);
+}
+
+// Test fixtures only: fingerprint their complete inventory to detect writes by the loader.
+fn fixture_inventory(path: &Path) -> Vec<(PathBuf, Vec<u8>, std::time::SystemTime)> {
+    let mut result = Vec::new();
+    for entry in fs::read_dir(path).unwrap() {
+        let entry = entry.unwrap();
+        if entry.file_type().unwrap().is_dir() {
+            result.extend(fixture_inventory(&entry.path()));
+        } else {
+            result.push((
+                entry.path(),
+                fs::read(entry.path()).unwrap(),
+                entry.metadata().unwrap().modified().unwrap(),
+            ));
+        }
+    }
+    result.sort_by(|left, right| left.0.cmp(&right.0));
+    result
+}
+
+#[test]
+fn latest_five_are_selected_per_category_and_old_artifacts_are_not_read() {
+    let fixture = Fixture::new();
+    let mut outputs = Vec::new();
+    for number in 0..8 {
+        outputs.push(fixture.output(number, "codex"));
+        let name = format!("20260911T130000{number:06}Z-abcdefgh.md");
+        for folder in [
+            "drafts/context-packs",
+            "drafts/next-steps",
+            "drafts/handoffs/codex",
+        ] {
+            fixture.artifact(
+                &format!("{folder}/{name}"),
+                &format!("# Draft {number}\n\nReview this draft."),
+            );
+            if number < 3 {
+                fs::write(fixture.workspace.join(format!("{folder}/{name}")), [0xff]).unwrap();
+            }
+        }
+    }
+    fixture.output_index(outputs);
+    let snapshot = fixture.read();
+    let project = &snapshot.projects[0];
+    for kind in ["output", "context-pack", "next-step", "handoff"] {
+        assert_eq!(
+            project
+                .recent_artifacts
+                .iter()
+                .filter(|artifact| artifact.kind == kind)
+                .count(),
+            5
+        );
+    }
+    assert_eq!(project.counts.context_packs, Some(8));
+    assert_eq!(project.counts.handoffs, Some(8));
+    assert_eq!(project.counts.outputs, Some(8));
+    assert!(snapshot.warnings.is_empty());
+    let dates: Vec<_> = project
+        .recent_artifacts
+        .iter()
+        .filter_map(|artifact| artifact.created_at.as_deref())
+        .collect();
+    assert!(dates.windows(2).all(|pair| pair[0] >= pair[1]));
+}
+
+#[test]
+fn update_packs_scan_only_the_latest_five_pack_folders_without_recursion() {
+    let fixture = Fixture::new();
+    for number in 0..7 {
+        let pack = format!("20260911T140000{number:06}Z-abcdef01");
+        fixture.artifact(
+            &format!("drafts/update-packs/{pack}/README-update.md"),
+            "# README update\n\nReady for review.",
+        );
+        if number < 2 {
+            fixture.artifact(
+                &format!("drafts/update-packs/{pack}/.env.md"),
+                "old-forbidden-marker",
+            );
+        }
+    }
+    let snapshot = fixture.read();
+    let project = &snapshot.projects[0];
+    assert_eq!(project.counts.update_packs, Some(7));
+    assert_eq!(project.recent_artifacts.len(), 5);
+    assert!(snapshot.warnings.is_empty());
+    assert_eq!(
+        project.recent_artifacts[0].created_at.as_deref(),
+        Some("2026-09-11T14:00:00.000006Z")
+    );
+}
+
+#[test]
+fn output_paths_must_match_their_safe_id_and_type() {
+    let fixture = Fixture::new();
+    let valid = fixture.output(1, "codex");
+    for path in [
+        "../../.env",
+        "/tmp/outside.md",
+        "outputs/codex/.env.md",
+        "outputs/codex/../terminal/file.md",
+        "outputs\\codex\\file.md",
+        "outputs/codex/arbitrary.md",
+    ] {
+        let mut invalid = valid.clone();
+        invalid["path"] = path.into();
+        invalid["title"] = "must-not-be-exposed-marker".into();
+        fixture.output_index(vec![invalid, valid.clone()]);
+        let snapshot = fixture.read();
+        let project = &snapshot.projects[0];
+        assert_eq!(project.recent_artifacts.len(), 1);
+        assert_eq!(project.counts.outputs, None);
+        assert!(!serde_json::to_string(&snapshot)
+            .unwrap()
+            .contains("must-not-be-exposed-marker"));
+    }
+}
+
+#[test]
+fn hidden_environment_files_links_and_unknown_subfolders_are_never_read() {
+    let fixture = Fixture::new();
+    let secret = fixture.root.join(".env");
+    fs::write(&secret, "environment-secret-marker").unwrap();
+    fixture.artifact("drafts/context-packs/safe.md", "# Safe context\n\nVisible.");
+    fixture.artifact(
+        "drafts/context-packs/.ENV.local.md",
+        "environment-secret-marker",
+    );
+    fixture.artifact(
+        "drafts/context-packs/nested/secret.md",
+        "recursive-secret-marker",
+    );
+    fixture.artifact("drafts/unapproved/source.md", "unapproved-source-marker");
+    symlink(
+        &secret,
+        fixture.workspace.join("drafts/context-packs/symlink.md"),
+    )
+    .unwrap();
+    fs::hard_link(
+        &secret,
+        fixture.workspace.join("drafts/context-packs/hardlink.md"),
+    )
+    .unwrap();
+    let snapshot = fixture.read();
+    assert_eq!(snapshot.projects[0].recent_artifacts.len(), 1);
+    assert_eq!(snapshot.projects[0].counts.context_packs, Some(1));
+    let json = serde_json::to_string(&snapshot).unwrap();
+    for marker in [
+        "environment-secret-marker",
+        "recursive-secret-marker",
+        "unapproved-source-marker",
+    ] {
+        assert!(!json.contains(marker));
+    }
+    assert!(!snapshot.warnings.is_empty());
+}
+
+#[test]
+fn symlinked_session_output_and_draft_directories_cannot_escape_the_workspace() {
+    let fixture = Fixture::new();
+    fixture.session("Private goal");
+    let session_path = fixture.workspace.join(format!("sessions/{SESSION_ID}"));
+    let saved = fixture.root.join("saved-session");
+    fs::rename(&session_path, &saved).unwrap();
+    symlink(&saved, &session_path).unwrap();
+    assert!(fixture.read().projects[0].active_session.is_none());
+    let output = fixture.output(1, "codex");
+    fixture.output_index(vec![output]);
+    let output_path = fixture.workspace.join("outputs/codex");
+    fs::rename(&output_path, fixture.root.join("saved-output")).unwrap();
+    symlink(fixture.root.join("saved-output"), &output_path).unwrap();
+    fs::create_dir(fixture.workspace.join("drafts")).unwrap();
+    symlink(
+        &fixture.root,
+        fixture.workspace.join("drafts/context-packs"),
+    )
+    .unwrap();
+    let snapshot = fixture.read();
+    assert!(snapshot.projects[0].recent_artifacts.is_empty());
+    assert_eq!(snapshot.projects[0].counts.context_packs, None);
+    assert!(!snapshot.warnings.is_empty());
+}
+
+#[test]
+fn artifact_previews_are_redacted_before_bounding_and_bad_files_warn() {
+    let fixture = Fixture::new();
+    fixture.artifact("drafts/context-packs/safe.md", &format!("# Context\napi_\x1b[31mkey: hidden-assignment-marker\n{}\n-----BEGIN PRIVATE KEY-----\nprivate-key-marker", "Review. ".repeat(200)));
+    fixture.artifact("drafts/next-steps/broken.md", "temporary");
+    fs::write(
+        fixture.workspace.join("drafts/next-steps/broken.md"),
+        [0xff],
+    )
+    .unwrap();
+    fixture.artifact(
+        "drafts/handoffs/codex/oversized.md",
+        &"x".repeat(reader::MAX_FILE_BYTES + 1),
+    );
+    let output = fixture.output(1, "codex");
+    fs::remove_file(fixture.workspace.join(output["path"].as_str().unwrap())).unwrap();
+    fixture.output_index(vec![output]);
+    let snapshot = fixture.read();
+    let project = &snapshot.projects[0];
+    assert_eq!(project.recent_artifacts.len(), 1);
+    assert!(
+        project.recent_artifacts[0]
+            .preview
+            .as_ref()
+            .unwrap()
+            .chars()
+            .count()
+            <= 601
+    );
+    assert_eq!(project.warnings.len(), 3);
+    let json = serde_json::to_string(&snapshot).unwrap();
+    assert!(!json.contains("hidden-assignment-marker") && !json.contains("private-key-marker"));
+}
+
+#[test]
+fn directory_and_total_entry_limits_fail_closed_instead_of_claiming_partial_counts() {
+    let fixture = Fixture::new();
+    for number in 0..=reader::MAX_DIRECTORY_ENTRIES {
+        fixture.artifact(
+            &format!("drafts/context-packs/file-{number}.md"),
+            "# Small draft",
+        );
+    }
+    let snapshot = fixture.read();
+    assert_eq!(snapshot.projects[0].counts.context_packs, None);
+    assert!(snapshot.projects[0].recent_artifacts.is_empty());
+    assert!(snapshot.warnings[0].contains("entry limit"));
+    fs::remove_file(fixture.workspace.join(format!(
+        "drafts/context-packs/file-{}.md",
+        reader::MAX_DIRECTORY_ENTRIES
+    )))
+    .unwrap();
+    let directory = fixture
+        .directory()
+        .child("drafts")
+        .unwrap()
+        .unwrap()
+        .child("context-packs")
+        .unwrap()
+        .unwrap();
+    let mut budget = ReadBudget::default();
+    for _ in 0..8 {
+        assert_eq!(
+            directory.list(&mut budget).unwrap().names.len(),
+            reader::MAX_DIRECTORY_ENTRIES
+        );
+    }
+    assert!(directory.list(&mut budget).is_err());
+}
+
+#[test]
+fn filenames_timestamps_and_directory_scopes_are_validated_before_reads() {
+    for name in [
+        ".env.md",
+        ".ENV.local",
+        "../file.md",
+        "nested/file.md",
+        "..\\file.md",
+        "/file.md",
+        "file.md.exe",
+        "file\0.md",
+    ] {
+        assert!(!names::markdown(name), "{name}");
+    }
+    assert_eq!(names::filename_time("README-update.md"), None);
+    assert_eq!(
+        names::filename_time("20260230T123456123456Z-abcdef01.md"),
+        None
+    );
+    assert_eq!(
+        names::filename_time("20260911T123456123456Z-abcdef01.md").as_deref(),
+        Some("2026-09-11T12:34:56.123456Z")
+    );
+    let fixture = Fixture::new();
+    fixture.session("Real goal");
+    let sessions = fixture.directory().child("sessions").unwrap().unwrap();
+    assert!(sessions.list(&mut ReadBudget::default()).is_err());
+    let session = sessions.child(SESSION_ID).unwrap().unwrap();
+    assert!(session
+        .read("source.md", &mut ReadBudget::default())
+        .is_err());
+    assert!(session.child("nested").is_err());
 }

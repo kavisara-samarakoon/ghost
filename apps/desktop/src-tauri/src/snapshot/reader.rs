@@ -1,8 +1,63 @@
 //! Descriptor-relative reads keep directory/file swaps from redirecting metadata reads.
+use super::names;
 use std::path::{Component, Path};
 
 pub const MAX_FILE_BYTES: usize = 256 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DIRECTORY_ENTRIES: usize = 512;
+const MAX_SNAPSHOT_ENTRIES: usize = 4096;
+
+#[derive(Clone, Copy)]
+enum Scope {
+    Root,
+    Workspace,
+    Sessions,
+    Session,
+    Outputs,
+    OutputType,
+    Drafts,
+    Handoffs,
+    Markdown,
+    UpdatePacks,
+    UpdatePack,
+}
+
+impl Scope {
+    fn child(self, name: &str) -> Option<Self> {
+        match (self, name) {
+            (Self::Root, ".ghost") => Some(Self::Workspace),
+            (Self::Workspace, "sessions") => Some(Self::Sessions),
+            (Self::Workspace, "outputs") => Some(Self::Outputs),
+            (Self::Workspace, "drafts") => Some(Self::Drafts),
+            (Self::Sessions, id) if names::session_id(id) => Some(Self::Session),
+            (Self::Outputs, "codex" | "terminal") => Some(Self::OutputType),
+            (Self::Drafts, "context-packs" | "next-steps") => Some(Self::Markdown),
+            (Self::Drafts, "handoffs") => Some(Self::Handoffs),
+            (Self::Drafts, "update-packs") => Some(Self::UpdatePacks),
+            (Self::Handoffs, "codex" | "chatgpt" | "gemini" | "antigravity") => {
+                Some(Self::Markdown)
+            }
+            (Self::UpdatePacks, name) if names::safe_segment(name) => Some(Self::UpdatePack),
+            _ => None,
+        }
+    }
+
+    fn allows_file(self, name: &str) -> bool {
+        match self {
+            Self::Root => name == "projects.yaml",
+            Self::Workspace => matches!(name, "project.yaml" | "status.md" | "active-session.yaml"),
+            Self::Session => matches!(name, "session.yaml" | "notes.md"),
+            Self::Outputs => name == "index.yaml",
+            Self::OutputType | Self::Markdown | Self::UpdatePack => names::markdown(name),
+            _ => false,
+        }
+    }
+}
+
+pub struct Listing {
+    pub names: Vec<String>,
+    pub skipped: bool,
+}
 
 pub fn validate_path(path: &Path) -> Result<(), &'static str> {
     if !path.is_absolute() || path.to_string_lossy().starts_with("//") {
@@ -23,23 +78,29 @@ pub fn validate_path(path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub struct ReadBudget(usize);
+pub struct ReadBudget {
+    bytes: usize,
+    entries: usize,
+}
 
 impl Default for ReadBudget {
     fn default() -> Self {
-        Self(MAX_SNAPSHOT_BYTES)
+        Self {
+            bytes: MAX_SNAPSHOT_BYTES,
+            entries: MAX_SNAPSHOT_ENTRIES,
+        }
     }
 }
 
 #[cfg(unix)]
 mod platform {
     use super::*;
-    use rustix::fs::{open, openat, Mode, OFlags};
+    use rustix::fs::{open, openat, statat, AtFlags, Dir, FileType, Mode, OFlags};
     use std::fs::File;
     use std::io::{ErrorKind, Read};
     use std::os::unix::fs::MetadataExt;
 
-    pub struct Directory(File);
+    pub struct Directory(File, Scope);
 
     fn directory_flags() -> OFlags {
         OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC
@@ -60,7 +121,7 @@ mod platform {
             validate_path(path)?;
             let root = open("/", directory_flags(), Mode::empty())
                 .map_err(|_| "Local filesystem is inaccessible.")?;
-            let mut directory = Self(File::from(root));
+            let mut directory = Self(File::from(root), Scope::Root);
             for component in path.components() {
                 if let Component::Normal(name) = component {
                     let file = optional_file(openat(
@@ -70,7 +131,7 @@ mod platform {
                         Mode::empty(),
                     ))?;
                     match file {
-                        Some(file) => directory = Self(file),
+                        Some(file) => directory = Self(file, Scope::Root),
                         None => return Ok(None),
                     }
                 }
@@ -79,12 +140,69 @@ mod platform {
         }
 
         pub fn child(&self, name: &str) -> Result<Option<Self>, &'static str> {
-            // Only GHOST-owned directories are ever opened under registered roots.
-            if !matches!(name, ".ghost" | "outputs") {
-                return Err("Directory is outside the metadata allowlist.");
-            }
+            let scope = self
+                .1
+                .child(name)
+                .ok_or("Directory is outside the metadata allowlist.")?;
             optional_file(openat(&self.0, name, directory_flags(), Mode::empty()))
-                .map(|file| file.map(Self))
+                .map(|file| file.map(|file| Self(file, scope)))
+        }
+
+        pub fn list(&self, budget: &mut ReadBudget) -> Result<Listing, &'static str> {
+            if !matches!(
+                self.1,
+                Scope::Markdown | Scope::UpdatePacks | Scope::UpdatePack
+            ) {
+                return Err("Directory scanning is outside the metadata allowlist.");
+            }
+            let directories = matches!(self.1, Scope::UpdatePacks);
+            let mut entries =
+                Dir::read_from(&self.0).map_err(|_| "Artifact directory is inaccessible.")?;
+            let mut listing = Listing {
+                names: Vec::new(),
+                skipped: false,
+            };
+            let mut visited = 0;
+            while let Some(entry) = entries.read() {
+                let entry = entry.map_err(|_| "Artifact directory could not be listed.")?;
+                let bytes = entry.file_name().to_bytes();
+                if bytes == b"." || bytes == b".." {
+                    continue;
+                }
+                if visited == MAX_DIRECTORY_ENTRIES || budget.entries == 0 {
+                    return Err(
+                        "Directory entry limit reached; recent artifacts and count unavailable.",
+                    );
+                }
+                visited += 1;
+                budget.entries -= 1;
+                let Ok(name) = std::str::from_utf8(bytes) else {
+                    listing.skipped = true;
+                    continue;
+                };
+                let allowed = if directories {
+                    names::safe_segment(name)
+                } else {
+                    names::markdown(name)
+                };
+                if !allowed {
+                    listing.skipped = true;
+                    continue;
+                }
+                let Ok(metadata) = statat(&self.0, name, AtFlags::SYMLINK_NOFOLLOW) else {
+                    listing.skipped = true;
+                    continue;
+                };
+                let kind = FileType::from_raw_mode(metadata.st_mode);
+                if (directories && kind == FileType::Directory)
+                    || (!directories && kind == FileType::RegularFile && metadata.st_nlink == 1)
+                {
+                    listing.names.push(name.to_owned());
+                } else {
+                    listing.skipped = true;
+                }
+            }
+            Ok(listing)
         }
 
         pub fn read(
@@ -92,14 +210,7 @@ mod platform {
             name: &str,
             budget: &mut ReadBudget,
         ) -> Result<Option<String>, &'static str> {
-            if !matches!(
-                name,
-                "projects.yaml"
-                    | "project.yaml"
-                    | "status.md"
-                    | "active-session.yaml"
-                    | "index.yaml"
-            ) {
+            if !self.1.allows_file(name) {
                 return Err("File is outside the metadata allowlist.");
             }
             let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
@@ -115,15 +226,14 @@ mod platform {
             if metadata.len() > MAX_FILE_BYTES as u64 {
                 return Err("Metadata exceeds the 256 KiB read limit.");
             }
-            if budget.0 == 0 || metadata.len() > budget.0 as u64 {
+            if budget.bytes == 0 || metadata.len() > budget.bytes as u64 {
                 return Err("Snapshot read limit reached.");
             }
-            let limit = MAX_FILE_BYTES.min(budget.0);
+            let limit = MAX_FILE_BYTES.min(budget.bytes);
             let mut bytes = Vec::new();
-            file.take((limit + 1) as u64)
-                .read_to_end(&mut bytes)
-                .map_err(|_| "Metadata could not be read.")?;
-            budget.0 = budget.0.saturating_sub(bytes.len());
+            let read_result = file.take((limit + 1) as u64).read_to_end(&mut bytes);
+            budget.bytes = budget.bytes.saturating_sub(bytes.len());
+            read_result.map_err(|_| "Metadata could not be read.")?;
             if bytes.len() > limit {
                 return Err("Metadata grew beyond the read limit.");
             }
@@ -147,6 +257,9 @@ mod platform {
             Self::open(Path::new(""))
         }
         pub fn read(&self, _: &str, _: &mut ReadBudget) -> Result<Option<String>, &'static str> {
+            Err("Safe local snapshots are unavailable on this platform.")
+        }
+        pub fn list(&self, _: &mut ReadBudget) -> Result<Listing, &'static str> {
             Err("Safe local snapshots are unavailable on this platform.")
         }
     }

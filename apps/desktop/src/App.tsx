@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
-import { loadGhostSnapshot, selectProject, type SnapshotState } from "./ghost-snapshot";
+import { artifactDate, loadGhostSnapshot, selectProject, sessionGoal, type SnapshotState } from "./ghost-snapshot";
+import LatestWork from "./LatestWork";
 import "./App.css";
 
 /**
@@ -182,10 +183,10 @@ function App() {
     ? [project, ...snapshot.projects.filter((item) => item.alias !== project?.alias)]
       .filter((item) => item !== undefined).map((item) => item.name)
     : previewProjects;
-  const sessionGoal = project?.active_session_goal ?? "Session goal unavailable in this read-only snapshot.";
   const projectStatus = !project ? "No registered projects"
     : !project.path_exists ? "Project unavailable"
     : !project.workspace_exists ? "Workspace unavailable"
+    : project.active_session ? "Session loaded"
     : "Read-only";
 
   return (
@@ -229,7 +230,7 @@ function App() {
           </div>
 
           <div className="session-block">
-            <span className="session-label">{live && !project?.active_session_goal ? "Local project" : "Current Session"}</span>
+            <span className="session-label">{live && !project?.active_session ? "Local project" : "Current Session"}</span>
             {live && project ? (
               <select className="session-project project-select" aria-label="Current project"
                 value={project.alias} onChange={(event) => setSelectedAlias(event.target.value)}>
@@ -237,8 +238,15 @@ function App() {
               </select>
             ) : <span className="session-project">{live ? "No registered projects" : "NEXORA"}</span>}
             <span className="session-goal">
-              {live ? (project ? sessionGoal : "Your local registry is empty.") : "Add wishlist price alert MVP"}
+              {live ? (project ? sessionGoal(project) : "Your local registry is empty.") : "Add wishlist price alert MVP"}
             </span>
+            {project?.active_session && (
+              <details className="snapshot-notice session-notes" key={project.alias}>
+                <summary>Session notes</summary>
+                {project.active_session.started_at && <span>Started {artifactDate(project.active_session.started_at)}</span>}
+                <p>{project.active_session.note_preview ?? "No session note preview available."}</p>
+              </details>
+            )}
             {live && project?.status_preview && (
               <span className="project-status-preview" title={project.status_preview}>{project.status_preview}</span>
             )}
@@ -263,7 +271,7 @@ function App() {
       </div>
 
       {/* ---- Next action row ---- */}
-      <ActionRow live={live} />
+      {live ? <LatestWork key={project?.alias} project={project} /> : <ActionRow live={false} />}
 
       {/* ---- Command bar ---- */}
       <div className="command-bar-area">
