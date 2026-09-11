@@ -6,6 +6,8 @@ const host = process.env.TAURI_DEV_HOST;
 // https://vite.dev/config/
 export default defineConfig(() => ({
   plugins: [react()],
+  // The static preview must not load local environment files.
+  envDir: false,
 
   // Vite options tailored for Tauri development and only applied in `tauri dev` or `tauri build`
   //
