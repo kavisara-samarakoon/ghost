@@ -14,12 +14,13 @@ Milestone 7 connects these features in an isolated, fictional NEXORA demo.
 Milestone 8 adds `ghost version` and a v0.1.0 release-candidate review checklist.
 AI integrations and workflow execution are not implemented yet.
 
-The [v0.2.0-alpha checkpoint](docs/release-v0.2.0-alpha.md) adds the runnable macOS
-Command Space app in `apps/desktop`: local snapshots, sessions, artifacts, bounded
-memory search, and click-only Open/Reveal actions. CLI workflow behavior is unchanged.
+The [v0.3.0-alpha checkpoint](docs/release-v0.3.0-alpha.md) is the first strong usable
+local MVP desktop checkpoint: Command cockpit, Projects, Sessions, Memory, and Artifacts
+pages backed by read-only snapshots, bounded search, and click-only Open/Reveal actions.
+CLI workflow behavior is unchanged apart from version metadata.
 
 The CLI is local-first and draft-first; actions beyond preparing local records
-require human approval. See the [alpha checkpoint](docs/release-v0.2.0-alpha.md)
+require human approval. See the [alpha checkpoint](docs/release-v0.3.0-alpha.md)
 for the current release scope and versions. The version
 number does not imply a published release or production readiness.
 

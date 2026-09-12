@@ -1,8 +1,9 @@
 # GHOST Desktop — Command Space
 
-GHOST v0.2.0-alpha is a local macOS app for project, active-session, and artifact
-snapshots, bounded memory search, and click-only Open/Reveal actions.
-See the [release checkpoint](../../docs/release-v0.2.0-alpha.md) for scope and versions.
+GHOST v0.3.0-alpha is a local macOS workflow cockpit for reviewing projects,
+active sessions, memory, and artifacts through a read-only snapshot. Native actions
+remain limited to click-only Open/Reveal for approved generated artifacts.
+See the [release checkpoint](../../docs/release-v0.3.0-alpha.md) for scope and versions.
 
 From `apps/desktop`:
 
