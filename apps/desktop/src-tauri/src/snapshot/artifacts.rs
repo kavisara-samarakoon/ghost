@@ -43,6 +43,33 @@ struct OutputEntry {
     path: String,
 }
 
+pub(super) fn allows_action(
+    workspace: &Directory,
+    project: &Project,
+    path: &str,
+    budget: &mut ReadBudget,
+) -> Result<bool, &'static str> {
+    let folder = workspace
+        .child("outputs")?
+        .ok_or("Output storage unavailable.")?;
+    let index = read_yaml::<OutputIndex>(&folder, "index.yaml", budget)?
+        .ok_or("Output index unavailable.")?;
+    if index.version != 1 || index.outputs.len() > super::reader::MAX_DIRECTORY_ENTRIES {
+        return Ok(false);
+    }
+    let matches: Vec<_> = index
+        .outputs
+        .iter()
+        .filter(|entry| entry.path == path)
+        .collect();
+    Ok(matches.len() == 1
+        && matches.iter().all(|entry| {
+            entry.project_alias == project.alias
+                && !entry.title.trim().is_empty()
+                && names::output_path(&entry.id, &entry.kind, &entry.path)
+        }))
+}
+
 pub(super) fn load(
     workspace: &Directory,
     project: &Project,

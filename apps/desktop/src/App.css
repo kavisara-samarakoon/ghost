@@ -592,6 +592,12 @@
 .artifact-preview p { color: var(--text-secondary); white-space: pre-wrap; }
 .artifact-path { display: block; margin-top: 8px; font-size: 10px; color: var(--muted); }
 .artifact-detail summary:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.artifact-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.artifact-actions button { padding: 4px 10px; border: 1px solid var(--border-strong); border-radius: 6px; color: var(--accent); font-size: 11px; }
+.artifact-actions button:hover:not(:disabled) { background: rgba(77, 216, 232, 0.06); }
+.artifact-actions button:disabled { opacity: 0.5; cursor: default; }
+.artifact-action-state { font-size: 11px; color: var(--text-secondary); }
+.artifact-safety-note { margin-top: 6px; font-size: 10px; color: var(--muted); }
 
 .command-bar-area {
   padding: 0 64px 18px;

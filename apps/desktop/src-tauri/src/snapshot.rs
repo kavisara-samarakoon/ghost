@@ -1,4 +1,5 @@
 //! Read allowlisted local metadata without modifying storage or executing workflows.
+pub mod actions;
 mod artifacts;
 mod names;
 mod reader;

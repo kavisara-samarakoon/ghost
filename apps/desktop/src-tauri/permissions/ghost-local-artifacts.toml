@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-local-artifacts"
+description = "Read local snapshots and request validated artifact actions from the main window."
+commands.allow = ["load_ghost_snapshot", "open_ghost_artifact", "reveal_ghost_artifact"]

@@ -271,7 +271,7 @@ function App() {
       </div>
 
       {/* ---- Next action row ---- */}
-      {live ? <LatestWork key={project?.alias} project={project} /> : <ActionRow live={false} />}
+      {live ? <LatestWork key={project?.alias} project={project} mode={snapshot.mode} /> : <ActionRow live={false} />}
 
       {/* ---- Command bar ---- */}
       <div className="command-bar-area">

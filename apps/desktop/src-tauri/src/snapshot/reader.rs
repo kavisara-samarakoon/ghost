@@ -205,11 +205,7 @@ mod platform {
             Ok(listing)
         }
 
-        pub fn read(
-            &self,
-            name: &str,
-            budget: &mut ReadBudget,
-        ) -> Result<Option<String>, &'static str> {
+        pub fn open_file(&self, name: &str) -> Result<Option<File>, &'static str> {
             if !self.1.allows_file(name) {
                 return Err("File is outside the metadata allowlist.");
             }
@@ -226,6 +222,20 @@ mod platform {
             if metadata.len() > MAX_FILE_BYTES as u64 {
                 return Err("Metadata exceeds the 256 KiB read limit.");
             }
+            Ok(Some(file))
+        }
+
+        pub fn read(
+            &self,
+            name: &str,
+            budget: &mut ReadBudget,
+        ) -> Result<Option<String>, &'static str> {
+            let Some(file) = self.open_file(name)? else {
+                return Ok(None);
+            };
+            let metadata = file
+                .metadata()
+                .map_err(|_| "Metadata file is inaccessible.")?;
             if budget.bytes == 0 || metadata.len() > budget.bytes as u64 {
                 return Err("Snapshot read limit reached.");
             }
@@ -258,6 +268,9 @@ mod platform {
         }
         pub fn read(&self, _: &str, _: &mut ReadBudget) -> Result<Option<String>, &'static str> {
             Err("Safe local snapshots are unavailable on this platform.")
+        }
+        pub fn open_file(&self, _: &str) -> Result<Option<std::fs::File>, &'static str> {
+            Err("Safe local artifacts are unavailable on this platform.")
         }
         pub fn list(&self, _: &mut ReadBudget) -> Result<Listing, &'static str> {
             Err("Safe local snapshots are unavailable on this platform.")
