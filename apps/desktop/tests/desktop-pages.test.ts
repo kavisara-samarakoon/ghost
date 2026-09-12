@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { registerHooks } from "node:module";
 import { afterEach, test } from "node:test";
-import { createElement } from "react";
+import { Children, createElement, isValidElement, type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
@@ -13,11 +13,13 @@ import { selectProject, type GhostProject } from "../src/ghost-snapshot.ts";
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (context.parentURL?.includes("/src/") && specifier.startsWith("./") && !/\.[a-z]+$/.test(specifier)) {
-      return nextResolve(`${specifier}.ts`, context);
+      const extension = existsSync(new URL(`${specifier}.tsx`, context.parentURL)) ? ".tsx" : ".ts";
+      return nextResolve(`${specifier}${extension}`, context);
     }
     return nextResolve(specifier, context);
   },
   load(url, context, nextLoad) {
+    if (/\.(css|png)$/.test(url)) return { format: "module", shortCircuit: true, source: `export default ${JSON.stringify(url)};` };
     if (url.endsWith(".tsx")) return { format: "module", shortCircuit: true, source: ts.transpileModule(readFileSync(new URL(url), "utf8"), {
       compilerOptions: { jsx: ts.JsxEmit.ReactJSX, module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2020 },
     }).outputText };
@@ -26,6 +28,8 @@ registerHooks({
 });
 const { default: DesktopPages } = await import("../src/DesktopPages.tsx");
 const { default: ProjectsPage, filterProjects, projectOverview } = await import("../src/ProjectsPage.tsx");
+const { default: SessionsPage, activeSessionCount, latestArtifactTime } = await import("../src/SessionsPage.tsx");
+const { default: App } = await import("../src/App.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
 
@@ -144,4 +148,116 @@ test("visiting and filtering Projects neither mounts memory search nor invokes I
     assert.ok(!html.includes('role="search"'));
     assert.ok(!html.includes('aria-label="Open '));
   }
+});
+
+
+test("Sessions renders the selected active session, notes, status, and related project work", () => {
+  for (const mode of ["static-preview", "live-local"] as const) {
+    const project = { ...sampleProjects[0], path_exists: true, workspace_exists: true };
+    const html = render("Sessions", [project], mode);
+    assert.match(html, /<h1[^>]*>Sessions<\/h1>/);
+    assert.ok(html.includes(project.active_session!.goal_preview));
+    assert.ok(html.includes(project.active_session!.note_preview!));
+    assert.ok(html.includes(project.status_preview!));
+    assert.ok(html.includes(project.alias));
+    assert.ok(html.includes(project.recent_artifacts[0].title));
+    assert.match(html, /Related work/);
+    assert.match(html, /Date unavailable/);
+    assert.match(html, mode === "live-local" ? /Live local read-only/ : /Desktop preview/);
+  }
+});
+
+test("Sessions keeps known empty, unreadable, and missing project states distinct", () => {
+  const empty = { ...sampleProjects[1], active_session_goal: "Obsolete goal must stay hidden" };
+  const html = render("Sessions", [empty], "live-local");
+  assert.match(html, /No active session/);
+  assert.match(html, /<code>ghost session start/);
+  assert.ok(!html.includes(empty.active_session_goal));
+  for (const sessions of [null, 1]) {
+    const unavailable = render("Sessions", [{ ...empty, counts: { ...empty.counts, sessions } }], "live-local");
+    assert.match(unavailable, /Active session unavailable/);
+    assert.ok(!unavailable.includes("ghost session start"));
+  }
+  assert.match(render("Sessions", [], "live-local"), /No project selected/);
+  const missingNotes = { ...sampleProjects[0], status_preview: null, active_session: { ...sampleProjects[0].active_session!, note_preview: null } };
+  const missing = render("Sessions", [missingNotes], "live-local");
+  assert.match(missing, /No session notes recorded/);
+  assert.match(missing, /No recorded project status/);
+});
+
+test("Sessions counts active metadata without treating unavailable values as zero", () => {
+  assert.equal(activeSessionCount(sampleProjects), 1);
+  assert.equal(activeSessionCount([]), 0);
+  const unreadable = { ...sampleProjects[1], counts: { ...sampleProjects[1].counts, sessions: null } };
+  assert.equal(activeSessionCount([sampleProjects[0], unreadable]), null);
+  assert.equal(activeSessionCount([{ ...unreadable, active_session: sampleProjects[0].active_session }]), 1);
+  assert.equal(activeSessionCount([{ ...unreadable, counts: { ...unreadable.counts, sessions: 1 } }]), 1);
+});
+
+test("Sessions finds the latest valid artifact timestamp without changing artifact order", () => {
+  const artifact = sampleProjects[0].recent_artifacts[0];
+  const dates = ["2026-09-10T10:00:00Z", null, "invalid", "2026-09-12T10:00:00Z", "2026-09-11T10:00:00Z"];
+  const artifacts = dates.map((created_at) => ({ ...artifact, created_at }));
+  assert.equal(latestArtifactTime(artifacts), dates[3]);
+  assert.deepEqual(artifacts.map((item) => item.created_at), dates);
+  assert.equal(latestArtifactTime([]), null);
+  assert.equal(latestArtifactTime([{ ...artifact, created_at: "invalid" }]), null);
+});
+
+test("Sessions uses the existing Open and Reveal guards without invoking them on render", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Rendering session artifacts must never invoke"));
+  const project = { ...sampleProjects[0], path_exists: true, workspace_exists: true };
+  for (const action of ["Open", "Reveal"]) {
+    assert.ok(render("Sessions", [project], "live-local").includes(`aria-label="${action} ${project.recent_artifacts[0].title}"`));
+    assert.ok(!render("Sessions", [project]).includes(`aria-label="${action} `));
+    assert.ok(!render("Sessions", [{ ...project, workspace_exists: false }], "live-local").includes(`aria-label="${action} `));
+  }
+});
+
+// Exercise actual navigation button callbacks without adding a DOM dependency.
+function buttonsIn(node: ReactNode): Array<{ onClick: () => void }> {
+  const buttons: Array<{ onClick: () => void }> = [];
+  Children.forEach(node, (child) => {
+    if (!isValidElement<{ children?: ReactNode; onClick?: () => void }>(child)) return;
+    if (child.type === "button" && child.props.onClick) buttons.push({ onClick: child.props.onClick });
+    buttons.push(...buttonsIn(child.props.children));
+  });
+  return buttons;
+}
+
+test("Sessions navigation requests existing pages while retaining selection and avoiding IPC", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Session navigation must never invoke or search memory"));
+  const destinations: string[] = [];
+  const project = sampleProjects[1];
+  const tree = SessionsPage({ projects: sampleProjects, project, mode: "live-local", onNavigate(page) {
+    destinations.push(page);
+    const selected = selectProject(sampleProjects, project.alias);
+    assert.equal(selected, project);
+    const html = renderToStaticMarkup(createElement(DesktopPages, {
+      page, projects: sampleProjects, project: selected, mode: "live-local", notice: null, warnings: [],
+      onSelect() {}, searchInputRef: { current: null },
+    }));
+    assert.match(html, new RegExp(`<h1[^>]*>${page}</h1>`));
+  } });
+  for (const button of buttonsIn(tree)) button.onClick();
+  assert.deepEqual(destinations, ["Artifacts", "Memory", "Projects"]);
+});
+
+test("Sessions does not mount memory search and Command and Projects still render", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Rendering pages must not invoke or search memory"));
+  assert.ok(!render("Sessions", sampleProjects, "live-local").includes('role="search"'));
+  assert.match(render("Projects"), /id="project-filter"/);
+  assert.match(renderToStaticMarkup(createElement(App)), /Command Space/);
+});
+
+test("Sessions renders notes, goals, status and project notices as inert text", () => {
+  const text = '<img src="invalid" onerror="alert(1)">';
+  const project = { ...sampleProjects[0], status_preview: text, warnings: [text],
+    active_session: { ...sampleProjects[0].active_session!, goal_preview: text, note_preview: text } };
+  const html = render("Sessions", [project], "live-local");
+  assert.ok(!html.includes("<img"));
+  assert.ok((html.match(/&lt;img/g) ?? []).length >= 4);
 });
