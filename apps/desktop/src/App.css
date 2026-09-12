@@ -672,6 +672,25 @@
   height: 16px;
 }
 
+.memory-search { z-index: 3; }
+.memory-search-options { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; margin-bottom: 8px; font-size: 11px; color: var(--text-secondary); }
+.memory-search-options select { max-width: min(320px, 100%); min-width: 0; padding: 4px 8px; color: var(--text); background: var(--surface); border: 1px solid var(--border-strong); border-radius: 6px; font: inherit; }
+.memory-search-options select:focus-visible { outline: 2px solid var(--accent); }
+.memory-search-options > span { margin-left: auto; }
+.memory-search .command-input { cursor: text; }
+.memory-results { position: absolute; bottom: calc(100% + 8px); left: 64px; right: 64px; max-height: min(390px, 55dvh); overflow-y: auto; overscroll-behavior: contain; padding: 16px 20px; border: 1px solid var(--border-strong); border-radius: 12px; background: #0c131d; box-shadow: 0 12px 40px rgba(0, 0, 0, 0.5); }
+.memory-results-heading { display: flex; align-items: center; gap: 12px; font-size: 11px; color: var(--text-secondary); }
+.memory-results-heading h2 { font-size: 12px; font-weight: 600; color: var(--text); }
+.memory-results-heading button { margin-left: auto; padding: 4px 8px; color: var(--accent); }
+.memory-query, .memory-empty, .memory-notices { margin-top: 10px; font-size: 12px; line-height: 1.5; color: var(--text-secondary); overflow-wrap: anywhere; }
+.memory-notices { list-style: none; }
+.memory-result-list { list-style: none; }
+.memory-result-list > li { padding: 14px 0; border-top: 1px solid var(--border); margin-top: 10px; }
+.memory-result-heading { display: flex; align-items: baseline; gap: 12px; }
+.memory-result-heading h3 { flex: 1; min-width: 0; font-size: 13px; font-weight: 500; overflow-wrap: anywhere; }
+.memory-snippet { margin-top: 8px; font-size: 12px; line-height: 1.6; color: var(--text-secondary); overflow-wrap: anywhere; }
+.memory-results .artifact-path { overflow-wrap: anywhere; }
+
 /* --------------------------------------------------------------------------
    Footer safety line
    -------------------------------------------------------------------------- */
@@ -706,6 +725,7 @@
    -------------------------------------------------------------------------- */
 
 @media (max-width: 1100px) {
+  .memory-results { left: 40px; right: 40px; }
   .command-space {
     width: calc(100vw - 32px);
     height: calc(100dvh - 32px);
@@ -747,6 +767,7 @@
 }
 
 @media (max-width: 860px) {
+  .memory-results { left: 32px; right: 32px; }
   .main-content {
     grid-template-columns: 1fr;
     padding: 0 32px;
@@ -789,6 +810,9 @@
 }
 
 @media (max-width: 600px) {
+  .memory-results { left: 20px; right: 20px; padding: 12px; max-height: 52dvh; }
+  .memory-search-options > span { margin-left: 0; }
+  .memory-result-heading { gap: 8px; }
   .artifact-date { display: none; }
   .artifact-preview { padding-left: 2px; }
   .artifact-kind { flex-basis: 68px; }

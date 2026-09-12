@@ -3,6 +3,7 @@ pub mod actions;
 mod artifacts;
 mod names;
 mod reader;
+pub mod search;
 mod session;
 mod text;
 

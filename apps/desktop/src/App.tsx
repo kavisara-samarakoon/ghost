@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { artifactDate, loadGhostSnapshot, selectProject, sessionGoal, type SnapshotState } from "./ghost-snapshot";
 import LatestWork from "./LatestWork";
+import MemorySearch from "./MemorySearch";
 import "./App.css";
 
 /**
@@ -102,30 +103,6 @@ function OrbitVisual({ projects, live, projectCount, outputCount }: {
         {live ? (outputCount === null ? "Output count unavailable" : `${outputCount} indexed outputs`) : "Validation pending"}
       </span>
     </div>
-  );
-}
-
-/* -----------------------------------------------------------------------
-   Inline SVG icons
-   ----------------------------------------------------------------------- */
-
-function SparkleIcon() {
-  return (
-    <svg className="command-bar-icon" viewBox="0 0 24 24" fill="none"
-      stroke="currentColor" strokeWidth="1.5" strokeLinecap="round"
-      strokeLinejoin="round" aria-hidden="true">
-      <path d="M12 2v4m0 12v4M4.93 4.93l2.83 2.83m8.48 8.48 2.83 2.83M2 12h4m12 0h4M4.93 19.07l2.83-2.83m8.48-8.48 2.83-2.83" />
-    </svg>
-  );
-}
-
-function SendIcon() {
-  return (
-    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-      strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"
-      aria-hidden="true">
-      <path d="M5 12h14m-6-6 6 6-6 6" />
-    </svg>
   );
 }
 
@@ -274,21 +251,7 @@ function App() {
       {live ? <LatestWork key={project?.alias} project={project} mode={snapshot.mode} /> : <ActionRow live={false} />}
 
       {/* ---- Command bar ---- */}
-      <div className="command-bar-area">
-        <div className="command-bar">
-          <SparkleIcon />
-          <input
-            className="command-input"
-            type="text"
-            placeholder={live ? "Read-only snapshot • commands are unavailable" : "Ask GHOST or type a command..."}
-            aria-label="Command input"
-            readOnly
-          />
-          <button className="command-send" type="button" aria-label="Send unavailable" disabled>
-            <SendIcon />
-          </button>
-        </div>
-      </div>
+      <MemorySearch mode={snapshot?.mode ?? "static-preview"} project={project} />
 
       {/* ---- Footer safety line ---- */}
       <div className="safety-footer">

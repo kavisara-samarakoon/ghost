@@ -6,6 +6,9 @@ pub const MAX_FILE_BYTES: usize = 256 * 1024;
 const MAX_SNAPSHOT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DIRECTORY_ENTRIES: usize = 512;
 const MAX_SNAPSHOT_ENTRIES: usize = 4096;
+pub const MAX_SEARCH_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_SEARCH_ENTRIES: usize = 2048;
+pub const MAX_SEARCH_READS: usize = 256;
 
 #[derive(Clone, Copy)]
 enum Scope {
@@ -45,7 +48,14 @@ impl Scope {
     fn allows_file(self, name: &str) -> bool {
         match self {
             Self::Root => name == "projects.yaml",
-            Self::Workspace => matches!(name, "project.yaml" | "status.md" | "active-session.yaml"),
+            Self::Workspace => matches!(
+                name,
+                "project.yaml"
+                    | "status.md"
+                    | "decisions.md"
+                    | "milestones.yaml"
+                    | "active-session.yaml"
+            ),
             Self::Session => matches!(name, "session.yaml" | "notes.md"),
             Self::Outputs => name == "index.yaml",
             Self::OutputType | Self::Markdown | Self::UpdatePack => names::markdown(name),
@@ -81,6 +91,7 @@ pub fn validate_path(path: &Path) -> Result<(), &'static str> {
 pub struct ReadBudget {
     bytes: usize,
     entries: usize,
+    reads: usize,
 }
 
 impl Default for ReadBudget {
@@ -88,7 +99,27 @@ impl Default for ReadBudget {
         Self {
             bytes: MAX_SNAPSHOT_BYTES,
             entries: MAX_SNAPSHOT_ENTRIES,
+            reads: usize::MAX,
         }
+    }
+}
+
+impl ReadBudget {
+    pub fn search() -> Self {
+        Self {
+            bytes: MAX_SEARCH_BYTES,
+            entries: MAX_SEARCH_ENTRIES,
+            reads: MAX_SEARCH_READS,
+        }
+    }
+
+    pub fn exhausted(&self) -> bool {
+        self.bytes == 0 || self.entries == 0 || self.reads == 0
+    }
+
+    #[cfg(test)]
+    pub fn remaining(&self) -> (usize, usize, usize) {
+        (self.bytes, self.entries, self.reads)
     }
 }
 
@@ -149,13 +180,26 @@ mod platform {
         }
 
         pub fn list(&self, budget: &mut ReadBudget) -> Result<Listing, &'static str> {
+            self.list_scoped(budget, false)
+        }
+
+        pub fn search_list(&self, budget: &mut ReadBudget) -> Result<Listing, &'static str> {
+            self.list_scoped(budget, true)
+        }
+
+        fn list_scoped(
+            &self,
+            budget: &mut ReadBudget,
+            search: bool,
+        ) -> Result<Listing, &'static str> {
             if !matches!(
                 self.1,
                 Scope::Markdown | Scope::UpdatePacks | Scope::UpdatePack
-            ) {
+            ) && !(search && matches!(self.1, Scope::Sessions | Scope::OutputType))
+            {
                 return Err("Directory scanning is outside the metadata allowlist.");
             }
-            let directories = matches!(self.1, Scope::UpdatePacks);
+            let directories = matches!(self.1, Scope::UpdatePacks | Scope::Sessions);
             let mut entries =
                 Dir::read_from(&self.0).map_err(|_| "Artifact directory is inaccessible.")?;
             let mut listing = Listing {
@@ -180,7 +224,9 @@ mod platform {
                     listing.skipped = true;
                     continue;
                 };
-                let allowed = if directories {
+                let allowed = if matches!(self.1, Scope::Sessions) {
+                    names::session_id(name)
+                } else if directories {
                     names::safe_segment(name)
                 } else {
                     names::markdown(name)
@@ -230,22 +276,35 @@ mod platform {
             name: &str,
             budget: &mut ReadBudget,
         ) -> Result<Option<String>, &'static str> {
+            if budget.reads == 0 || budget.bytes == 0 {
+                return Err("Local metadata read budget reached.");
+            }
+            budget.reads -= 1;
             let Some(file) = self.open_file(name)? else {
                 return Ok(None);
             };
             let metadata = file
                 .metadata()
                 .map_err(|_| "Metadata file is inaccessible.")?;
-            if budget.bytes == 0 || metadata.len() > budget.bytes as u64 {
-                return Err("Snapshot read limit reached.");
+            if metadata.len() > budget.bytes as u64 {
+                budget.bytes = 0;
+                return Err("Local metadata read budget reached.");
             }
             let limit = MAX_FILE_BYTES.min(budget.bytes);
             let mut bytes = Vec::new();
-            let read_result = file.take((limit + 1) as u64).read_to_end(&mut bytes);
+            let read_result = (&file)
+                .take((limit + 1).min(budget.bytes) as u64)
+                .read_to_end(&mut bytes);
             budget.bytes = budget.bytes.saturating_sub(bytes.len());
             read_result.map_err(|_| "Metadata could not be read.")?;
             if bytes.len() > limit {
                 return Err("Metadata grew beyond the read limit.");
+            }
+            let after = file
+                .metadata()
+                .map_err(|_| "Metadata file is inaccessible.")?;
+            if after.nlink() != 1 || after.len() != bytes.len() as u64 {
+                return Err("Metadata changed during the read.");
             }
             String::from_utf8(bytes)
                 .map(Some)
@@ -274,6 +333,9 @@ mod platform {
         }
         pub fn list(&self, _: &mut ReadBudget) -> Result<Listing, &'static str> {
             Err("Safe local snapshots are unavailable on this platform.")
+        }
+        pub fn search_list(&self, _: &mut ReadBudget) -> Result<Listing, &'static str> {
+            Err("Safe local search is unavailable on this platform.")
         }
     }
 }
