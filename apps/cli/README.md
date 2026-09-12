@@ -41,15 +41,15 @@ from the repository root if the environment is not activated:
 
 ## Version and release checkpoint
 
-`ghost version` prints `GHOST 0.2.0a0` and exits 0. Version and help commands work
+`ghost version` prints `GHOST 0.3.0a0` and exits 0. Version and help commands work
 without initialization and do not resolve, read, or create workflow storage.
 The version's single source is the literal `__version__` in
 `src/ghost_cli/__init__.py`; setuptools reads it when building package metadata.
 There is no runtime Git lookup, configuration read, or network version check.
 When changing that value, rebuild/reinstall the package to refresh installed metadata.
 
-The [v0.2.0-alpha checkpoint](../../docs/release-v0.2.0-alpha.md) uses Python's
-normalized `0.2.0a0` package version. CLI commands and storage behavior are unchanged.
+The [v0.3.0-alpha checkpoint](../../docs/release-v0.3.0-alpha.md) uses Python's
+normalized `0.3.0a0` package version. CLI commands and storage behavior are unchanged.
 The [v0.1.0 candidate checklist](../../docs/release-candidate-v0.1.0.md) remains
 historical. Start safely with `ghost demo nexora`, then follow its printed report;
 use the printed demo home for subsequent `ghost doctor` or session inspection.
