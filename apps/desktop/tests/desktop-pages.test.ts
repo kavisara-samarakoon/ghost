@@ -32,7 +32,7 @@ const { default: ProjectsPage, filterProjects, projectOverview } = await import(
 const { default: SessionsPage, activeSessionCount, latestArtifactTime } = await import("../src/SessionsPage.tsx");
 const { ArtifactsView, filterArtifacts, latestDatedArtifact, selectedArtifact } = await import("../src/ArtifactsPage.tsx");
 const { MemorySearchForm, MemorySearchView, currentSearchResponse, memoryQueryExamples } = await import("../src/MemorySearch.tsx");
-const { default: App } = await import("../src/App.tsx");
+const { default: App, CommandPage } = await import("../src/App.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
 
@@ -285,6 +285,71 @@ function buttonsIn(node: ReactNode): Array<{ onClick: () => void }> {
   return buttons;
 }
 
+function buttonsWithClass(node: ReactNode, className: string): Array<{ onClick: () => void }> {
+  const buttons: Array<{ onClick: () => void }> = [];
+  Children.forEach(node, (child) => {
+    if (!isValidElement<{ children?: ReactNode; className?: string; onClick?: () => void }>(child)) return;
+    if (child.type === "button" && child.props.className === className && child.props.onClick) {
+      buttons.push({ onClick: child.props.onClick });
+    }
+    buttons.push(...buttonsWithClass(child.props.children, className));
+  });
+  return buttons;
+}
+
+function commandView(project = sampleProjects[0], onNavigate: (page: "Projects" | "Sessions" | "Memory" | "Artifacts") => void = () => {}) {
+  return CommandPage({ projects: sampleProjects, project, mode: "static-preview", notice: null, warnings: [], onSelect() {}, onNavigate });
+}
+
+test("Command renders the local workflow, MVP guidance, and real page destinations", () => {
+  mockIPC(() => assert.fail("Visiting Command must not search memory or invoke native actions"));
+  const html = renderToStaticMarkup(commandView());
+  assert.match(html, /<h1[^>]*id="command-title"[^>]*>.*Command Space/s);
+  assert.match(html, /Current workflow/);
+  assert.match(html, /Suggested next steps/);
+  assert.match(html, /Local MVP status/);
+  assert.match(html, /Recommended flow/);
+  for (const label of ["Review Projects", "Continue Session", "Search Memory", "Review Artifacts"]) {
+    assert.ok(html.includes(`aria-label="${label}"`));
+  }
+  assert.ok(!html.includes('role="search"'));
+});
+
+test("Command uses loaded snapshot values and calm placeholders without inventing records", () => {
+  const liveProject = { ...sampleProjects[0], path: "/work/ghost", path_exists: true, workspace_exists: true };
+  const live = renderToStaticMarkup(CommandPage({ projects: [liveProject], project: liveProject, mode: "live-local",
+    notice: null, warnings: [], onSelect() {}, onNavigate() {} }));
+  assert.ok(live.includes(liveProject.name));
+  assert.ok(live.includes(liveProject.path));
+  assert.ok(live.includes(liveProject.active_session!.id));
+  assert.ok(live.includes(liveProject.recent_artifacts[0].title));
+  assert.match(live, /Live local read-only/);
+
+  const empty = renderToStaticMarkup(CommandPage({ projects: [], project: undefined, mode: "live-local",
+    notice: null, warnings: [], onSelect() {}, onNavigate() {} }));
+  assert.match(empty, /No active session/);
+  assert.match(empty, /No artifact selected/);
+  assert.ok(!empty.includes("NEXORA"));
+});
+
+test("Command navigation cards switch frontend pages while preserving project selection and avoiding IPC", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Command navigation must not invoke native commands or memory search"));
+  const project = sampleProjects[1];
+  const destinations: string[] = [];
+  const tree = commandView(project, (page) => {
+    destinations.push(page);
+    const selected = selectProject(sampleProjects, project.alias);
+    assert.equal(selected, project);
+    assert.match(renderToStaticMarkup(createElement(DesktopPages, {
+      page, projects: sampleProjects, project: selected, mode: "live-local", notice: null, warnings: [],
+      onSelect() {}, searchInputRef: { current: null },
+    })), new RegExp(`<h1[^>]*>${page}</h1>`));
+  });
+  for (const button of buttonsWithClass(tree, "command-action-card")) button.onClick();
+  assert.deepEqual(destinations, ["Projects", "Sessions", "Memory", "Artifacts"]);
+});
+
 test("Memory navigation keeps the selected project and performs no IPC", () => {
   Object.assign(globalThis, { isTauri: true });
   mockIPC(() => assert.fail("Memory navigation must not invoke native commands"));
@@ -300,10 +365,10 @@ test("Memory navigation keeps the selected project and performs no IPC", () => {
   assert.deepEqual(destinations, ["Projects", "Sessions", "Artifacts"]);
 });
 
-test("Command, Projects, Sessions, and Artifacts still render after Memory v1", () => {
+test("Command, Projects, Sessions, Memory, and Artifacts all render after cockpit polish", () => {
   mockIPC(() => assert.fail("Rendering existing pages must not invoke native commands"));
   assert.match(renderToStaticMarkup(createElement(App)), /Command Space/);
-  for (const page of ["Projects", "Sessions", "Artifacts"] as const) {
+  for (const page of ["Projects", "Sessions", "Memory", "Artifacts"] as const) {
     assert.match(render(page), new RegExp(`<h1[^>]*>${page}</h1>`));
   }
 });

@@ -3241,3 +3241,376 @@
     flex-basis: 100%;
   }
 }
+
+/* Command cockpit — connects the read-only MVP pages without adding actions. */
+.hero-main {
+  display: block;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.command-page {
+  width: 100%;
+  min-width: 0;
+  animation: page-appear 180ms ease-out;
+}
+
+.command-hero {
+  width: 100%;
+  max-width: 1320px;
+  min-height: 320px;
+  margin: 0 auto;
+  padding-top: 22px;
+  padding-bottom: 8px;
+}
+
+.command-hero .orbit-container {
+  flex-basis: 330px;
+  height: 330px;
+}
+
+.command-eyebrow {
+  margin-bottom: 14px;
+}
+
+.command-hero .hero-support {
+  max-width: 500px;
+}
+
+.command-cockpit {
+  width: 100%;
+  max-width: 1320px;
+  margin: 0 auto;
+  padding: 4px 48px 64px;
+}
+
+.command-cockpit-grid,
+.command-guidance-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 0.95fr) minmax(0, 1.25fr);
+  gap: 16px;
+  align-items: stretch;
+}
+
+.command-guidance-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin-top: 16px;
+}
+
+.command-workflow,
+.command-next,
+.command-safety,
+.command-flow {
+  max-height: none;
+  overflow: visible;
+  padding: 22px;
+}
+
+.command-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.command-panel-heading h2 {
+  margin-top: 7px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.command-panel-heading .status-pill {
+  margin-top: 0;
+}
+
+.command-project-picker {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 16px;
+  color: var(--text-secondary);
+  font-size: 11px;
+}
+
+.command-project-picker select {
+  width: 100%;
+  min-width: 0;
+  padding: 9px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  background: var(--surface-inset);
+  color: var(--text);
+  font: inherit;
+  font-size: 12px;
+}
+
+.command-project-picker select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.command-workflow-facts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  border-top: 1px solid var(--border);
+  border-left: 1px solid var(--border);
+}
+
+.command-workflow-facts > div {
+  min-width: 0;
+  padding: 12px;
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+}
+
+.command-workflow-facts dt,
+.command-workflow-facts span {
+  display: block;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+
+.command-workflow-facts dd {
+  margin: 5px 0 2px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 550;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.command-workflow-facts .command-path {
+  color: var(--text-secondary);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.command-notice {
+  margin-top: 14px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.command-notice summary {
+  cursor: pointer;
+}
+
+.command-notice ul {
+  margin-top: 8px;
+  padding-left: 18px;
+}
+
+.command-action-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.command-action-card {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+  min-height: 104px;
+  padding: 16px;
+  text-align: left;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: rgba(8, 13, 20, 0.42);
+  transition: border-color 150ms ease-out, background 150ms ease-out, transform 150ms ease-out;
+}
+
+.command-action-card:hover {
+  border-color: rgba(77, 216, 232, 0.34);
+  background: rgba(77, 216, 232, 0.055);
+  transform: translateY(-1px);
+}
+
+.command-action-number {
+  color: var(--accent);
+  font: 11px var(--mono);
+}
+
+.command-action-copy {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.command-action-copy strong {
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.command-action-copy > span {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.command-action-card > svg {
+  width: 16px;
+  height: 16px;
+  color: var(--accent);
+  transition: transform 150ms ease-out;
+}
+
+.command-action-card:hover > svg {
+  transform: translateX(2px);
+}
+
+.command-safety ul {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px 18px;
+  list-style: none;
+}
+
+.command-safety li {
+  position: relative;
+  padding-left: 18px;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.command-safety li::before {
+  content: "";
+  position: absolute;
+  top: 0.53em;
+  left: 1px;
+  width: 6px;
+  height: 6px;
+  border: 1px solid var(--accent-dim);
+  border-radius: 50%;
+  background: rgba(77, 216, 232, 0.12);
+}
+
+.command-flow ol {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 0;
+  list-style: none;
+}
+
+.command-flow li {
+  min-width: 0;
+  padding: 0 12px;
+  border-left: 1px solid var(--border);
+}
+
+.command-flow li:first-child {
+  padding-left: 0;
+  border-left: 0;
+}
+
+.command-flow li:last-child {
+  padding-right: 0;
+}
+
+.command-flow li > span {
+  display: block;
+  margin-bottom: 8px;
+  color: var(--accent);
+  font: 11px var(--mono);
+}
+
+.command-flow p,
+.command-flow small {
+  display: block;
+}
+
+.command-flow strong {
+  font-size: 12px;
+  font-weight: 600;
+  line-height: 1.45;
+}
+
+.command-flow small {
+  margin-top: 5px;
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+@media (max-width: 1100px) {
+  .command-cockpit {
+    padding-right: 32px;
+    padding-left: 32px;
+  }
+
+  .command-cockpit-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .command-flow ol {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 16px 0;
+  }
+
+  .command-flow li:nth-child(4) {
+    padding-left: 0;
+    border-left: 0;
+  }
+}
+
+@media (max-width: 860px) {
+  .command-hero {
+    padding-top: 26px;
+  }
+
+  .command-cockpit {
+    padding: 8px 20px 64px;
+  }
+
+  .command-guidance-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 600px) {
+  .command-cockpit {
+    padding-right: 16px;
+    padding-left: 16px;
+  }
+
+  .command-workflow,
+  .command-next,
+  .command-safety,
+  .command-flow {
+    padding: 18px;
+  }
+
+  .command-workflow-facts,
+  .command-action-grid,
+  .command-safety ul,
+  .command-flow ol {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .command-flow li,
+  .command-flow li:nth-child(4) {
+    padding: 12px 0 0;
+    border-top: 1px solid var(--border);
+    border-left: 0;
+  }
+
+  .command-flow li:first-child {
+    padding-top: 0;
+    border-top: 0;
+  }
+
+  .command-action-card {
+    min-height: 0;
+  }
+}

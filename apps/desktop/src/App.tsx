@@ -1,7 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { artifactDate, loadGhostSnapshot, selectProject, sessionGoal, type SnapshotState } from "./ghost-snapshot";
-import LatestWork from "./LatestWork";
-import MemorySearch from "./MemorySearch";
+import { loadGhostSnapshot, selectProject, type GhostProject, type GhostSnapshot, type SnapshotState } from "./ghost-snapshot";
 import DesktopPages, { pageNames, type DesktopPage } from "./DesktopPages";
 import { sampleProjects } from "./preview-projects";
 import ghostLogo from "./assets/brand/ghost-logo.png";
@@ -12,16 +10,6 @@ import "./App.css";
  *
  * Local metadata through a read-only Tauri command, with static browser preview.
  */
-
-/* -----------------------------------------------------------------------
-   Static preview data
-   ----------------------------------------------------------------------- */
-
-const actionSteps = [
-  { number: "01", label: "Run validation" },
-  { number: "02", label: "Review Codex output" },
-  { number: "03", label: "Prepare update pack" },
-] as const;
 
 /* -----------------------------------------------------------------------
    Simple inline SVG icons for the project strip
@@ -124,30 +112,141 @@ function OrbitVisualization({ projectNames }: { projectNames: string[] }) {
   );
 }
 
-/* -----------------------------------------------------------------------
-   Action row (static preview fallback for session panel)
-   ----------------------------------------------------------------------- */
+const commandActions = [
+  { page: "Projects", label: "Review Projects", detail: "Choose the local workspace you are currently working on." },
+  { page: "Sessions", label: "Continue Session", detail: "Inspect the current goal, notes, and session context." },
+  { page: "Memory", label: "Search Memory", detail: "Find prior decisions, outputs, and next steps with explicit search." },
+  { page: "Artifacts", label: "Review Artifacts", detail: "Open generated drafts and reports through approved controls." },
+] as const satisfies ReadonlyArray<{ page: Exclude<DesktopPage, "Command">; label: string; detail: string }>;
 
-function ActionRow({ live }: { live: boolean }) {
-  return (
-    <div className="next-action-area">
-      <div className="next-action-label">{live ? "Suggested workflow \u2022 manual steps" : "Next Action"}</div>
-      <div className="action-row" role="list" aria-label="Next actions">
-        {actionSteps.map((step, index) => (
-          <div key={step.number} style={{ display: "contents" }}>
-            {index > 0 && <div className="action-connector" />}
-            <div
-              className={`action-step${index === 0 ? " action-step-active" : ""}`}
-              role="listitem"
-            >
-              <span className="action-step-number">{step.number}</span>
-              <span className="action-step-text">{step.label}</span>
-            </div>
-          </div>
-        ))}
+type CommandPageProps = {
+  projects: GhostProject[];
+  project?: GhostProject;
+  mode: GhostSnapshot["mode"];
+  notice: string | null;
+  warnings: string[];
+  onSelect: (alias: string) => void;
+  onNavigate: (page: Exclude<DesktopPage, "Command">) => void;
+};
+
+export function CommandPage({ projects, project, mode, notice, warnings, onSelect, onNavigate }: CommandPageProps) {
+  const preview = mode === "static-preview";
+  const session = project?.active_session;
+  const artifact = project?.recent_artifacts[0];
+  const projectPath = project?.path || "—";
+
+  return <div className="command-page">
+    <section className="hero-section command-hero" aria-labelledby="command-title">
+      <div className="hero-text">
+        <p className="page-eyebrow command-eyebrow">Local-first workflow command</p>
+        <h1 className="hero-headline" id="command-title">
+          Command Space<br />
+          <span className="hero-headline-accent">for Your Personal</span><br />
+          AI Workflow
+        </h1>
+        <p className="hero-support">
+          Coordinate projects, sessions, memory, and generated artifacts from one secure local workspace.
+        </p>
+        <div className="hero-buttons">
+          <button className="btn-primary" type="button" onClick={() => onNavigate("Sessions")}>
+            Continue Session
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
+              <path d="M5 12h14m-6-6 6 6-6 6" />
+            </svg>
+          </button>
+          <button className="btn-secondary" type="button" onClick={() => onNavigate("Memory")}>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
+              <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
+            </svg>
+            Search Memory
+          </button>
+        </div>
       </div>
-    </div>
-  );
+
+      <OrbitVisualization projectNames={projects.slice(0, 4).map((item) => item.name)} />
+    </section>
+
+    <section className="command-cockpit" aria-label="Command workspace overview">
+      <div className="command-cockpit-grid">
+        <section className="glass-panel command-workflow" aria-labelledby="current-workflow-title">
+          <div className="command-panel-heading">
+            <div>
+              <p className="page-eyebrow">Today’s workspace</p>
+              <h2 id="current-workflow-title">Current workflow</h2>
+            </div>
+            <span className="page-badge">{preview ? "Desktop preview" : "Live local read-only"}</span>
+          </div>
+
+          {projects.length > 0 && <label className="command-project-picker">Selected project
+            <select value={project?.alias ?? ""} onChange={(event) => onSelect(event.target.value)}>
+              {projects.map((item) => <option key={item.alias} value={item.alias}>{item.name}</option>)}
+            </select>
+          </label>}
+
+          <dl className="command-workflow-facts">
+            <div><dt>Selected project</dt><dd>{project?.name ?? "—"}</dd></div>
+            <div><dt>Project path</dt><dd className="command-path" title={projectPath}>{projectPath}</dd></div>
+            <div><dt>Active session</dt><dd>{session?.id ?? "No active session"}</dd><span>{session ? session.status : project ? "Manual start from CLI" : "—"}</span></div>
+            <div><dt>Latest artifact</dt><dd>{artifact?.title ?? "No artifact selected"}</dd><span>{artifact ? artifact.kind.replace(/-/g, " ") : "—"}</span></div>
+            <div><dt>Loaded projects</dt><dd>{projects.length}</dd><span>{preview ? "Sample project metadata" : "Current local snapshot"}</span></div>
+            <div><dt>Local mode</dt><dd>{preview ? "Static preview" : "Local · Secure"}</dd><span>Read-only desktop snapshot</span></div>
+          </dl>
+
+          {notice && <p className="command-notice" role="status">{notice}</p>}
+          {warnings.length > 0 && <details className="command-notice"><summary>Local metadata notices ({warnings.length})</summary><ul>{warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul></details>}
+        </section>
+
+        <section className="glass-panel command-next" aria-labelledby="command-next-title">
+          <div className="command-panel-heading">
+            <div>
+              <p className="page-eyebrow">Frontend navigation only</p>
+              <h2 id="command-next-title">Suggested next steps</h2>
+            </div>
+            <span className="page-badge">Choose where to review</span>
+          </div>
+          <div className="command-action-grid">
+            {commandActions.map((action, index) => <button key={action.page} type="button" className="command-action-card"
+              aria-label={action.label} onClick={() => onNavigate(action.page)}>
+              <span className="command-action-number">0{index + 1}</span>
+              <span className="command-action-copy"><strong>{action.label}</strong><span>{action.detail}</span></span>
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>
+            </button>)}
+          </div>
+        </section>
+      </div>
+
+      <div className="command-guidance-grid">
+        <section className="glass-panel command-safety" aria-labelledby="command-safety-title">
+          <div className="command-panel-heading">
+            <div><p className="page-eyebrow">Human in the loop</p><h2 id="command-safety-title">Local MVP status</h2></div>
+            <span className="status-pill"><span className="status-pill-dot" />Safe boundary</span>
+          </div>
+          <ul>
+            <li>Desktop data is a read-only local snapshot.</li>
+            <li>Open and Reveal are limited to approved generated artifacts.</li>
+            <li>Memory search runs only after explicit submit.</li>
+            <li>Generated work remains draft-first.</li>
+            <li>No automatic publishing, deployment, or merge.</li>
+            <li>No shell or CLI execution from the desktop yet.</li>
+          </ul>
+        </section>
+
+        <section className="glass-panel command-flow" aria-labelledby="command-flow-title">
+          <div className="command-panel-heading">
+            <div><p className="page-eyebrow">Recommended flow</p><h2 id="command-flow-title">Move through work safely</h2></div>
+            <span className="page-badge">Manual today</span>
+          </div>
+          <ol>
+            <li><span>01</span><p><strong>Select or review a project</strong><small>Confirm the workspace in Projects.</small></p></li>
+            <li><span>02</span><p><strong>Check the active session</strong><small>Review its goal, notes, and status.</small></p></li>
+            <li><span>03</span><p><strong>Search memory</strong><small>Retrieve previous decisions with an explicit query.</small></p></li>
+            <li><span>04</span><p><strong>Review artifacts</strong><small>Inspect generated drafts and reports.</small></p></li>
+            <li><span>05</span><p><strong>Continue from the CLI</strong><small>Create new sessions and outputs there until safe write actions arrive.</small></p></li>
+          </ol>
+        </section>
+      </div>
+    </section>
+  </div>;
 }
 
 /* -----------------------------------------------------------------------
@@ -177,21 +276,10 @@ function App() {
   const live = snapshot !== null;
   const projects = snapshot?.projects ?? sampleProjects;
   const project = selectProject(projects, selectedAlias);
-  const projectStatus = !project ? "No registered projects"
-    : !project.path_exists ? "Project unavailable"
-    : !project.workspace_exists ? "Workspace unavailable"
-    : project.active_session ? "Session loaded"
-    : "Read-only";
-
-  const orbitNames = projects.slice(0, 4).map((item) => item.name);
-
   function handleNavClick(page: DesktopPage) {
     setActivePage(page);
     if (page === "Memory" && activePage === "Memory") searchInputRef.current?.focus();
   }
-
-  function handleOpenSession() { handleNavClick("Sessions"); }
-  function handleSearchMemory() { handleNavClick("Memory"); }
 
   return (
     <div className="command-space">
@@ -230,138 +318,9 @@ function App() {
 
       {/* ---- Scrollable main content ---- */}
       <main ref={mainRef} className={activePage === "Command" ? "hero-main" : "pages-main"}>
-        {activePage === "Command" ? <>
-
-        {/* ---- Hero section ---- */}
-        <section className="hero-section">
-          <div className="hero-text">
-            <h1 className="hero-headline">
-              Command Space<br />
-              <span className="hero-headline-accent">for Your Personal</span><br />
-              AI Workflow
-            </h1>
-            <p className="hero-support">
-              Organize projects, sessions, memory, and artifacts — locally and securely.
-            </p>
-            <div className="hero-buttons">
-              <button className="btn-primary" type="button" onClick={handleOpenSession}>
-                Open Session
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-                  <path d="M5 12h14m-6-6 6 6-6 6" />
-                </svg>
-              </button>
-              <button className="btn-secondary" type="button" onClick={handleSearchMemory}>
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
-                  <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
-                </svg>
-                Search Memory
-              </button>
-            </div>
-          </div>
-
-          <OrbitVisualization projectNames={orbitNames} />
-        </section>
-
-        {/* ---- Workflow panels ---- */}
-        <section className="workflow-section">
-          <div className="workflow-panels">
-
-            {/* Panel A: Current Session */}
-            <div className="glass-panel" id="panel-session">
-              <div className="panel-header">
-                <svg className="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" />
-                </svg>
-                <span className="panel-title">
-                  {live && !project?.active_session ? "Local Project" : "Current Session"}
-                </span>
-                <span className="panel-badge">
-                  <span className="status-dot" />
-                  {live ? projectStatus : project?.active_session ? "Sample session" : "Sample project"}
-                </span>
-              </div>
-
-              <div className="session-content">
-                {live && project ? (
-                  <>
-                    <select className="session-project-select" aria-label="Current project"
-                      value={project.alias} onChange={(event) => setSelectedAlias(event.target.value)}>
-                      {snapshot.projects.map((item) => <option key={item.alias} value={item.alias}>{item.name}</option>)}
-                    </select>
-                    <span className="session-goal-text">
-                      {sessionGoal(project)}
-                    </span>
-                    {project.active_session && (
-                      <details className="snapshot-notice session-notes" key={project.alias}>
-                        <summary>Session notes</summary>
-                        {project.active_session.started_at && <span>Started {artifactDate(project.active_session.started_at)}</span>}
-                        <p>{project.active_session.note_preview ?? "No session note preview available."}</p>
-                      </details>
-                    )}
-                    {project.status_preview && (
-                      <span className="project-status-preview" title={project.status_preview}>{project.status_preview}</span>
-                    )}
-                  </>
-                ) : (
-                  <>
-                    <span className="session-project-name">{live ? "No registered projects" : project?.name}</span>
-                    <span className="session-goal-text">
-                      {live ? "Your local registry is empty." : project ? sessionGoal(project) : "Choose a project"}
-                    </span>
-                    <span className="status-pill">
-                      <span className="status-pill-dot" />
-                      {live ? "No active session" : project?.active_session ? "Sample session" : "Sample project"}
-                    </span>
-                  </>
-                )}
-                {notice && <span className="snapshot-notice" role="status">{notice}</span>}
-                {snapshot && snapshot.warnings.length > 0 && (
-                  <details className="snapshot-notice">
-                    <summary>{snapshot.warnings.length} snapshot notice{snapshot.warnings.length === 1 ? "" : "s"}</summary>
-                    <ul>{snapshot.warnings.map((warning, index) => <li key={index}>{warning}</li>)}</ul>
-                  </details>
-                )}
-              </div>
-            </div>
-
-            {/* Panel B: Recent Artifacts */}
-            <div className="glass-panel" id="panel-artifacts">
-              <div className="panel-header">
-                <svg className="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" /><path d="M14 2v6h6" />
-                </svg>
-                <span className="panel-title">Recent Artifacts</span>
-                {live && project && project.recent_artifacts.length > 0 && (
-                  <span className="panel-badge">
-                    {project.recent_artifacts.length} loaded
-                  </span>
-                )}
-              </div>
-              {live
-                ? <LatestWork key={project?.alias} project={project} mode={snapshot.mode} />
-                : <ActionRow live={false} />
-              }
-            </div>
-
-            {/* Panel C: Memory Search */}
-            <div className="glass-panel" id="panel-memory">
-              <div className="panel-header">
-                <svg className="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                  <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
-                </svg>
-                <span className="panel-title">Memory Search</span>
-              </div>
-              <MemorySearch
-                mode={snapshot?.mode ?? "static-preview"}
-                project={project}
-                searchInputRef={searchInputRef}
-              />
-            </div>
-
-          </div>
-        </section>
-
-        </> : <DesktopPages key={activePage} page={activePage} projects={projects} project={project}
+        {activePage === "Command" ? <CommandPage projects={projects} project={project}
+          mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}
+          onSelect={setSelectedAlias} onNavigate={handleNavClick} /> : <DesktopPages key={activePage} page={activePage} projects={projects} project={project}
           mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}
           onSelect={setSelectedAlias} onNavigate={handleNavClick} searchInputRef={searchInputRef} />}
       </main>
