@@ -14,12 +14,13 @@ Milestone 7 connects these features in an isolated, fictional NEXORA demo.
 Milestone 8 adds `ghost version` and a v0.1.0 release-candidate review checklist.
 AI integrations and workflow execution are not implemented yet.
 
-The existing Tauri/React app in `apps/desktop` is future UI. It is outside CLI
-Milestones 1–8 and remains unchanged.
+The [v0.2.0-alpha checkpoint](docs/release-v0.2.0-alpha.md) adds the runnable macOS
+Command Space app in `apps/desktop`: local snapshots, sessions, artifacts, bounded
+memory search, and click-only Open/Reveal actions. CLI workflow behavior is unchanged.
 
 The CLI is local-first and draft-first; actions beyond preparing local records
-require human approval. See the [v0.1.0 candidate notes](docs/release-candidate-v0.1.0.md)
-for scope, limitations, validation, and manual review before tagging. The version
+require human approval. See the [alpha checkpoint](docs/release-v0.2.0-alpha.md)
+for the current release scope and versions. The version
 number does not imply a published release or production readiness.
 
 ## Setup
@@ -224,6 +225,7 @@ refuses to proceed without successful CI checks.
 
 [GitHub Actions CI](.github/workflows/ci.yml) checks pull requests targeting `main`
 and pushes to `main`: CLI tests/lint on Python 3.11 and 3.14, release-helper syntax
-and safety tests, and repository whitespace/bytecode hygiene. CI is validation
+and safety tests, desktop frontend build/tests, native macOS Rust tests/checks,
+and repository whitespace/cache/build-artifact hygiene. CI is validation
 only; human review and the [release workflow](docs/release-workflow.md) confirmations
 remain required before merge/tag.
