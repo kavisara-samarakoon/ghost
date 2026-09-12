@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from "react";
 import { artifactDate, loadGhostSnapshot, selectProject, sessionGoal, type SnapshotState } from "./ghost-snapshot";
 import LatestWork from "./LatestWork";
 import MemorySearch from "./MemorySearch";
+import DesktopPages, { pageNames, type DesktopPage } from "./DesktopPages";
+import { sampleProjects } from "./preview-projects";
 import ghostLogo from "./assets/brand/ghost-logo.png";
 import "./App.css";
 
@@ -14,9 +16,6 @@ import "./App.css";
 /* -----------------------------------------------------------------------
    Static preview data
    ----------------------------------------------------------------------- */
-
-const previewProjects = ["NEXORA", "SentinelLite AI", "ARM-SecNet", "Portfolio"];
-const stripProjects = ["NEXORA", "SentinelLite AI", "ARM-SecNet", "Portfolio", "University Work"];
 
 const actionSteps = [
   { number: "01", label: "Run validation" },
@@ -66,7 +65,7 @@ function OrbitVisualization({ projectNames }: { projectNames: string[] }) {
     { x: cx - r2, y: cy, labelY: 18 },            // left
   ];
 
-  const names = projectNames.length >= 4 ? projectNames.slice(0, 4) : previewProjects;
+  const names = projectNames.slice(0, 4);
 
   return (
     <div className="orbit-container">
@@ -152,21 +151,21 @@ function ActionRow({ live }: { live: boolean }) {
 }
 
 /* -----------------------------------------------------------------------
-   Nav items
-   ----------------------------------------------------------------------- */
-
-const navItems = ["Projects", "Sessions", "Memory", "Artifacts"] as const;
-
-/* -----------------------------------------------------------------------
    Main App — Hero-style command center
    ----------------------------------------------------------------------- */
 
 function App() {
   const [{ snapshot, notice }, setSnapshot] = useState<SnapshotState>({ snapshot: null, notice: null });
   const [selectedAlias, setSelectedAlias] = useState<string | null>(null);
-  const [activeNav, setActiveNav] = useState<string>("Projects");
+  const [activePage, setActivePage] = useState<DesktopPage>("Command");
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const sessionPanelRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLElement>(null);
+
+  useEffect(() => {
+    if (mainRef.current) mainRef.current.scrollTop = 0;
+    if (activePage === "Memory") searchInputRef.current?.focus();
+    else mainRef.current?.querySelector("h1")?.focus();
+  }, [activePage]);
 
   useEffect(() => {
     let cancelled = false;
@@ -177,45 +176,28 @@ function App() {
   }, []);
 
   const live = snapshot !== null;
-  const project = selectProject(snapshot?.projects ?? [], selectedAlias);
+  const projects = snapshot?.projects ?? sampleProjects;
+  const project = selectProject(projects, selectedAlias);
   const projectStatus = !project ? "No registered projects"
     : !project.path_exists ? "Project unavailable"
     : !project.workspace_exists ? "Workspace unavailable"
     : project.active_session ? "Session loaded"
     : "Read-only";
 
-  // Orbit node names: use real project names when live, fallback to preview names
-  const orbitNames = live && snapshot.projects.length > 0
-    ? snapshot.projects.map((p) => p.name)
-    : previewProjects;
+  const orbitNames = projects.slice(0, 4).map((item) => item.name);
 
-  // Bottom strip items: merge real projects with static placeholders
-  const stripItems = live && snapshot.projects.length > 0
-    ? [...snapshot.projects.map((p) => p.name), ...stripProjects.filter((s) => !snapshot.projects.some((p) => p.name === s))]
-    : stripProjects;
-
-  function handleNavClick(item: string) {
-    setActiveNav(item);
-    // Scroll/focus to the matching section
-    if (item === "Memory") {
-      searchInputRef.current?.focus();
-    } else if (item === "Sessions") {
-      sessionPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-    }
+  function handleNavClick(page: DesktopPage) {
+    setActivePage(page);
+    if (page === "Memory" && activePage === "Memory") searchInputRef.current?.focus();
   }
 
-  function handleOpenSession() {
-    sessionPanelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }
-
-  function handleSearchMemory() {
-    searchInputRef.current?.focus();
-  }
+  function handleOpenSession() { handleNavClick("Sessions"); }
+  function handleSearchMemory() { handleNavClick("Memory"); }
 
   return (
     <div className="command-space">
       {/* ---- Top navigation ---- */}
-      <nav className="hero-nav">
+      <nav className="hero-nav" aria-label="Main navigation">
         <div className="nav-logo">
           <span className="nav-logo-emblem">
             <img className="nav-logo-image" src={ghostLogo} alt="GHOST logo" draggable={false} />
@@ -224,15 +206,11 @@ function App() {
         </div>
 
         <ul className="nav-links">
-          {navItems.map((item) => (
-            <li key={item}
-              className={`nav-link${activeNav === item ? " active" : ""}`}
-              onClick={() => handleNavClick(item)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => e.key === "Enter" && handleNavClick(item)}
-            >
-              {item}
+          {pageNames.map((item) => (
+            <li key={item}>
+              <button type="button" className={`nav-link${activePage === item ? " active" : ""}`}
+                aria-current={activePage === item ? "page" : undefined}
+                onClick={() => handleNavClick(item)}>{item}</button>
             </li>
           ))}
         </ul>
@@ -252,12 +230,13 @@ function App() {
       </nav>
 
       {/* ---- Scrollable main content ---- */}
-      <div className="hero-main">
+      <main ref={mainRef} className={activePage === "Command" ? "hero-main" : "pages-main"}>
+        {activePage === "Command" ? <>
 
         {/* ---- Hero section ---- */}
         <section className="hero-section">
           <div className="hero-text">
-            <h1 className="hero-headline">
+            <h1 className="hero-headline" tabIndex={-1}>
               Command Space<br />
               <span className="hero-headline-accent">for Your Personal</span><br />
               AI Workflow
@@ -289,7 +268,7 @@ function App() {
           <div className="workflow-panels">
 
             {/* Panel A: Current Session */}
-            <div className="glass-panel" ref={sessionPanelRef} id="panel-session">
+            <div className="glass-panel" id="panel-session">
               <div className="panel-header">
                 <svg className="panel-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                   <rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18" />
@@ -299,7 +278,7 @@ function App() {
                 </span>
                 <span className="panel-badge">
                   <span className="status-dot" />
-                  {live ? projectStatus : "In Progress"}
+                  {live ? projectStatus : project?.active_session ? "Sample session" : "Sample project"}
                 </span>
               </div>
 
@@ -326,13 +305,13 @@ function App() {
                   </>
                 ) : (
                   <>
-                    <span className="session-project-name">{live ? "No registered projects" : "NEXORA"}</span>
+                    <span className="session-project-name">{live ? "No registered projects" : project?.name}</span>
                     <span className="session-goal-text">
-                      {live ? "Your local registry is empty." : "Add wishlist price alert MVP"}
+                      {live ? "Your local registry is empty." : project ? sessionGoal(project) : "Choose a project"}
                     </span>
                     <span className="status-pill">
                       <span className="status-pill-dot" />
-                      In Progress
+                      {live ? "No active session" : project?.active_session ? "Sample session" : "Sample project"}
                     </span>
                   </>
                 )}
@@ -383,28 +362,21 @@ function App() {
           </div>
         </section>
 
-      </div>
+        </> : <DesktopPages key={activePage} page={activePage} projects={projects} project={project}
+          mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}
+          onSelect={setSelectedAlias} searchInputRef={searchInputRef} />}
+      </main>
 
       {/* ---- Bottom project strip ---- */}
       <div className="project-strip">
-        {stripItems.slice(0, 5).map((name) => {
-          const isActive = live && project?.name === name;
-          return (
-            <div
-              key={name}
-              className={`strip-item${isActive ? " active" : ""}`}
-              onClick={() => {
-                if (live) {
-                  const match = snapshot.projects.find((p) => p.name === name);
-                  if (match) setSelectedAlias(match.alias);
-                }
-              }}
-            >
-              <StripIcon name={name} />
-              <span>{name}</span>
-            </div>
-          );
-        })}
+        {projects.slice(0, 5).map((item) => (
+          <button type="button" key={item.alias}
+            className={`strip-item${project?.alias === item.alias ? " active" : ""}`}
+            aria-pressed={project?.alias === item.alias} onClick={() => setSelectedAlias(item.alias)}>
+            <StripIcon name={item.name} />
+            <span>{item.name}</span>
+          </button>
+        ))}
       </div>
 
       {/* ---- Safety strip ---- */}
