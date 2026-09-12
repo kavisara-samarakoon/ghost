@@ -1,63 +1,30 @@
-# GHOST Desktop — Command Center Preview
+# GHOST Desktop — Command Space
 
-Milestone 9 is a static frontend shell for GHOST v0.1.0, built with the existing
-Tauri, React, TypeScript, and Vite stack. GHOST means **GitHub, Handoff, Operations,
-Search, and Tracking** — Secure Personal AI Workflow Coordinator.
+GHOST v0.2.0-alpha is a local macOS app for project, active-session, and artifact
+snapshots, bounded memory search, and click-only Open/Reveal actions.
+See the [release checkpoint](../../docs/release-v0.2.0-alpha.md) for scope and versions.
 
-## Preview locally
-
-From `apps/desktop`, with Node.js and pnpm installed:
+From `apps/desktop`:
 
 ```sh
 pnpm install --frozen-lockfile
-pnpm dev
+pnpm tauri dev
 ```
 
-Open the local URL printed by Vite. To validate the frontend:
+Use `pnpm dev` for the browser preview; local memory and native actions are unavailable there.
+Build and validate the local macOS alpha with:
 
 ```sh
 pnpm build
-pnpm preview
+pnpm test
+pnpm tauri build
+cd src-tauri
+cargo test --locked
+cargo check --locked
 ```
 
-`pnpm build` checks TypeScript and creates frontend assets in `dist/`. It does
-not compile or validate the native Tauri application.
-
-## Explore the shell
-
-- Command Center combines four sample project cards, a current session, a
-  recommended review, recent drafts, safety boundaries, and doctor status.
-- Select NEXORA, SentinelLite AI, ARM-SecNet, or Portfolio to change the sample
-  session and drafts. Sidebar views retain that selection.
-- Handoffs, Outputs, and Update Packs open readable sample drafts in a modal.
-  Close with the close button or Escape; keyboard focus returns to the trigger.
-- Doctor deliberately reports **Not run** and **Not checked**; no results are
-  fabricated. Demo is a frontend walkthrough, not the CLI demo.
-- The workflow strip illustrates project → session → output → handoff → next →
-  update pack → doctor. It is not an execution progress indicator.
-
-The layout supports the existing 1280 × 840 native window, its 1024 × 720 minimum,
-larger desktop windows, and narrower browser previews. Content scrolls within the
-desktop workspace. Keyboard focus, a skip link, and reduced-motion preferences
-are supported. The existing temporary letter mark is retained; native icons are
-unchanged.
-
-## Frontend boundary
-
-All content comes from `src/preview-data.ts`. View selection, project selection,
-and open drafts use React state only and reset on reload. There is no persistence,
-AI integration, application network request, shell execution, CLI invocation,
-GitHub automation, filesystem scanning, or access to `~/.ghost` or real project
-workspaces. Drafts are neither generated on disk nor sent anywhere.
-
-Vite environment-file loading is disabled with `envDir: false`. Fonts are system
-fonts, and icons are local inline SVGs. No dependencies were added. The existing
-native Tauri scaffold is unchanged and is not invoked by this frontend.
-
-## Source layout
-
-- `src/App.tsx`: shell, focused views, shared panels, and draft dialog.
-- `src/preview-data.ts`: typed fictional project, artifact, and workflow fixtures.
-- `src/Icon.tsx`: small shared set of decorative line icons.
-- `src/shell.css`: app layout, navigation, typography, and shared tokens.
-- `src/App.css`: panels, draft preview, and responsive content layouts.
+The app and DMG are created under `src-tauri/target/release/bundle/` and remain ignored.
+No Apple signing or notarization is configured. Snapshot/search/action code does not
+write workflow files, execute shell/CLI commands, call AI/network services, read
+`.env` files, or search source code. Native actions require an explicit user click
+and revalidate allowlisted local artifacts.
