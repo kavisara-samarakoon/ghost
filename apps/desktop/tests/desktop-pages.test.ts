@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { sampleProjects } from "../src/preview-projects.ts";
-import type { GhostProject } from "../src/ghost-snapshot.ts";
+import { selectProject, type GhostProject } from "../src/ghost-snapshot.ts";
 
 // Reuse the installed compiler to render the real page components without a new test runtime.
 registerHooks({
@@ -25,6 +25,7 @@ registerHooks({
   },
 });
 const { default: DesktopPages } = await import("../src/DesktopPages.tsx");
+const { default: ProjectsPage, filterProjects, projectOverview } = await import("../src/ProjectsPage.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
 
@@ -75,4 +76,72 @@ test("project names, paths, and notes are rendered as inert text", () => {
   assert.match(html, /&lt;script/);
   assert.ok(!html.includes("<img"));
   assert.ok(!html.includes("<script"));
+});
+
+
+function renderProjects(query = "", alias = sampleProjects[0].alias, projects = sampleProjects) {
+  return renderToStaticMarkup(createElement(ProjectsPage, {
+    projects, project: selectProject(projects, alias), mode: "static-preview", query,
+    onQueryChange() {}, onSelect() {},
+  }));
+}
+
+test("Projects renders the sample cards, overview, and selected styling", () => {
+  const html = renderProjects();
+  assert.equal((html.match(/class="glass-panel project-page-card/g) ?? []).length, sampleProjects.length);
+  assert.equal((html.match(/aria-pressed="true"/g) ?? []).length, 1);
+  assert.match(html, /aria-label="Sample project overview"/);
+  assert.match(html, /id="project-filter"/);
+  assert.match(html, /ghost project add/);
+});
+
+test("project filtering searches name, alias, configured path, and recorded or derived status", () => {
+  const projects = [{ ...sampleProjects[0], path: "/work/commerce", path_exists: true, workspace_exists: true, status_preview: "Ready for review" },
+    { ...sampleProjects[1], path: "/work/security", path_exists: true, workspace_exists: false }];
+  for (const query of ["NEXORA", "nexora", "commerce", "ready review", "active session", "  NeXoRa   review  "]) {
+    assert.deepEqual(filterProjects(projects, query, "live-local").map((p) => p.alias), [projects[0].alias]);
+  }
+  assert.deepEqual(filterProjects(projects, "workspace unavailable", "live-local").map((p) => p.alias), [projects[1].alias]);
+  assert.equal(filterProjects(projects, " ", "live-local").length, 2);
+  assert.equal(filterProjects(projects, "no-such-project", "live-local").length, 0);
+});
+
+test("filtered cards and the no-match state are rendered while preserving selection", () => {
+  const html = renderProjects("Sentinel");
+  assert.equal((html.match(/class="glass-panel project-page-card/g) ?? []).length, 1);
+  assert.match(html, /1 of 5 projects/);
+  assert.match(html, /Selection is preserved/);
+  assert.match(html, /<strong>NEXORA<\/strong>/);
+  const empty = renderProjects("no-such-project");
+  assert.match(empty, /No projects match/);
+  assert.match(empty, /Clear filter/);
+  assert.ok(!empty.includes('class="glass-panel project-page-card'));
+});
+
+test("selected project styling follows the existing shared selection helper", () => {
+  const html = renderProjects("", sampleProjects[1].alias);
+  const cards = html.split('<button type="button" class="glass-panel project-page-card');
+  assert.ok(!cards[1].startsWith(' selected'));
+  assert.ok(cards[2].startsWith(' selected'));
+  assert.match(cards[2], /aria-pressed="true"/);
+});
+
+test("overview leaves unknown session totals unavailable and counts only loaded artifact previews", () => {
+  assert.deepEqual(projectOverview(sampleProjects), { total: 5, activeSessions: 1, loadedArtifacts: 2 });
+  const unknown = { ...sampleProjects[1], counts: { ...sampleProjects[1].counts, sessions: null } };
+  assert.equal(projectOverview([sampleProjects[0], unknown]).activeSessions, null);
+  assert.equal(projectOverview([unknown]).loadedArtifacts, 0);
+  assert.deepEqual(projectOverview([]), { total: 0, activeSessions: 0, loadedArtifacts: 0 });
+});
+
+test("visiting and filtering Projects neither mounts memory search nor invokes IPC", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Projects must use only already-loaded frontend metadata"));
+  const page = render("Projects", sampleProjects, "live-local");
+  assert.ok(!page.includes('aria-label="Search GHOST memory"'));
+  for (const query of ["", "nexora", "missing"]) {
+    const html = renderProjects(query);
+    assert.ok(!html.includes('role="search"'));
+    assert.ok(!html.includes('aria-label="Open '));
+  }
 });

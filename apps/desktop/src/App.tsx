@@ -164,7 +164,6 @@ function App() {
   useEffect(() => {
     if (mainRef.current) mainRef.current.scrollTop = 0;
     if (activePage === "Memory") searchInputRef.current?.focus();
-    else mainRef.current?.querySelector("h1")?.focus();
   }, [activePage]);
 
   useEffect(() => {
@@ -236,7 +235,7 @@ function App() {
         {/* ---- Hero section ---- */}
         <section className="hero-section">
           <div className="hero-text">
-            <h1 className="hero-headline" tabIndex={-1}>
+            <h1 className="hero-headline">
               Command Space<br />
               <span className="hero-headline-accent">for Your Personal</span><br />
               AI Workflow
@@ -364,7 +363,7 @@ function App() {
 
         </> : <DesktopPages key={activePage} page={activePage} projects={projects} project={project}
           mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}
-          onSelect={setSelectedAlias} searchInputRef={searchInputRef} />}
+          onSelect={setSelectedAlias} onNavigate={handleNavClick} searchInputRef={searchInputRef} />}
       </main>
 
       {/* ---- Bottom project strip ---- */}
