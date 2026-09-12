@@ -7,6 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { sampleProjects } from "../src/preview-projects.ts";
+import { searchGhostMemory, type SearchResponse } from "../src/ghost-memory.ts";
 import { selectProject, type GhostArtifact, type GhostProject } from "../src/ghost-snapshot.ts";
 
 // Reuse the installed compiler to render the real page components without a new test runtime.
@@ -30,6 +31,7 @@ const { default: DesktopPages } = await import("../src/DesktopPages.tsx");
 const { default: ProjectsPage, filterProjects, projectOverview } = await import("../src/ProjectsPage.tsx");
 const { default: SessionsPage, activeSessionCount, latestArtifactTime } = await import("../src/SessionsPage.tsx");
 const { ArtifactsView, filterArtifacts, latestDatedArtifact, selectedArtifact } = await import("../src/ArtifactsPage.tsx");
+const { MemorySearchForm, MemorySearchView, currentSearchResponse, memoryQueryExamples } = await import("../src/MemorySearch.tsx");
 const { default: App } = await import("../src/App.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
@@ -44,7 +46,7 @@ test("all preview pages are labelled samples and render without invoking native 
   mockIPC(() => assert.fail("Page rendering must never invoke"));
   for (const page of ["Projects", "Sessions", "Memory", "Artifacts"] as const) {
     const html = render(page);
-    assert.match(html, /Static preview · Sample data/);
+    assert.match(html, /Desktop preview|Static preview · Sample data/);
     assert.ok(!html.includes('aria-label="Open '));
     assert.ok(!html.includes('aria-label="Reveal '));
   }
@@ -81,6 +83,62 @@ test("project names, paths, and notes are rendered as inert text", () => {
   assert.match(html, /&lt;script/);
   assert.ok(!html.includes("<img"));
   assert.ok(!html.includes("<script"));
+});
+
+const memoryResponse: SearchResponse = {
+  query: "release notes", mode: "live-local", results: [], warnings: [],
+  safety: { read_only: true, no_shell_execution: true, no_cli_execution: true,
+    no_ai_calls: true, no_network_calls: true, no_file_writes: true },
+};
+
+function memoryViewProps(overrides: Partial<Parameters<typeof MemorySearchView>[0]> = {}): Parameters<typeof MemorySearchView>[0] {
+  return { mode: "static-preview", project: sampleProjects[0], projects: sampleProjects, layout: "page",
+    query: "", scope: "all", pending: false, response: null, inputRef: { current: null },
+    onQueryChange() {}, onScopeChange() {}, onSubmit() {}, onDismiss() {}, ...overrides };
+}
+
+test("Memory Page v1 renders its overview, search workspace, guidance, and safe preview state", () => {
+  mockIPC(() => assert.fail("Visiting Memory must not search or perform native actions"));
+  for (const mode of ["static-preview", "live-local"] as const) {
+    const html = render("Memory", sampleProjects, mode);
+    assert.match(html, /<h1[^>]*>Memory<\/h1>/);
+    assert.match(html, /aria-label="Search GHOST memory"/);
+    assert.match(html, /aria-label="Memory overview"|aria-label="Sample memory overview"/);
+    assert.match(html, /Search local memory/);
+    assert.match(html, /Query examples/);
+    assert.match(html, /Safe interpretation/);
+    assert.match(html, mode === "live-local" ? /Live local read-only/ : /Desktop preview/);
+  }
+});
+
+test("Memory query helpers pre-fill only and never invoke search", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Query helpers must not invoke IPC"));
+  const queries: string[] = [];
+  let submits = 0;
+  const tree = MemorySearchView(memoryViewProps({ mode: "live-local", onQueryChange: (query) => queries.push(query), onSubmit: () => { submits += 1; } }));
+  for (const button of buttonsIn(tree).slice(0, memoryQueryExamples.length)) button.onClick();
+  assert.deepEqual(queries, [...memoryQueryExamples]);
+  assert.equal(submits, 0);
+});
+
+test("Memory form submission reaches only the existing approved search behavior", async () => {
+  Object.assign(globalThis, { isTauri: true });
+  const calls: unknown[] = [];
+  mockIPC((command, args) => { calls.push({ command, args }); return memoryResponse; });
+  let prevented = false;
+  let search: Promise<SearchResponse> | undefined;
+  const form = MemorySearchForm(memoryViewProps({ mode: "live-local", query: "release notes",
+    onSubmit: () => { search = searchGhostMemory("live-local", "release notes"); } }));
+  form.props.onSubmit({ preventDefault: () => { prevented = true; } } as never);
+  assert.equal(prevented, true);
+  assert.deepEqual(await search, memoryResponse);
+  assert.deepEqual(calls, [{ command: "search_ghost_memory", args: { query: "release notes" } }]);
+});
+
+test("Memory stale-response guard accepts only the current generation", () => {
+  assert.equal(currentSearchResponse(8, 9, memoryResponse), null);
+  assert.equal(currentSearchResponse(9, 9, memoryResponse), memoryResponse);
 });
 
 
@@ -226,6 +284,29 @@ function buttonsIn(node: ReactNode): Array<{ onClick: () => void }> {
   });
   return buttons;
 }
+
+test("Memory navigation keeps the selected project and performs no IPC", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Memory navigation must not invoke native commands"));
+  const project = sampleProjects[1];
+  const destinations: string[] = [];
+  const tree = MemorySearchView(memoryViewProps({ mode: "live-local", project, onNavigate(page) {
+    destinations.push(page);
+    const selected = selectProject(sampleProjects, project.alias);
+    assert.equal(selected, project);
+    assert.match(render(page, sampleProjects, "live-local"), new RegExp(`<h1[^>]*>${page}</h1>`));
+  } }));
+  for (const button of buttonsIn(tree).slice(memoryQueryExamples.length)) button.onClick();
+  assert.deepEqual(destinations, ["Projects", "Sessions", "Artifacts"]);
+});
+
+test("Command, Projects, Sessions, and Artifacts still render after Memory v1", () => {
+  mockIPC(() => assert.fail("Rendering existing pages must not invoke native commands"));
+  assert.match(renderToStaticMarkup(createElement(App)), /Command Space/);
+  for (const page of ["Projects", "Sessions", "Artifacts"] as const) {
+    assert.match(render(page), new RegExp(`<h1[^>]*>${page}</h1>`));
+  }
+});
 
 test("Sessions navigation requests existing pages while retaining selection and avoiding IPC", () => {
   Object.assign(globalThis, { isTauri: true });
