@@ -5,110 +5,16 @@ import MemorySearch from "./MemorySearch";
 import "./App.css";
 
 /**
- * GHOST Command Space — single-screen frontend.
+ * GHOST Command Space — three-column workspace layout.
  *
  * Local metadata through a read-only Tauri command, with static browser preview.
  */
 
 /* -----------------------------------------------------------------------
-   Orbit visual — SVG rings, spokes, and nodes
+   Static preview action steps (shown when no snapshot is loaded)
    ----------------------------------------------------------------------- */
 
 const previewProjects = ["NEXORA", "ARM-SecNet", "Portfolio", "SentinelLite AI"];
-const nodePositions = ["top", "right", "bottom", "left"];
-
-function OrbitVisual({ projects, live, projectCount, outputCount }: {
-  projects: string[];
-  live: boolean;
-  projectCount: number;
-  outputCount: number | null;
-}) {
-  const cx = 210;
-  const cy = 210;
-  const r1 = 60;   /* inner dashed ring */
-  const r2 = 110;  /* middle ring */
-  const r3 = 160;  /* outer ring */
-
-  /* Four node positions: top, right, bottom, left */
-  const nodes = [
-    { x: cx, y: cy - r3 + 10 },
-    { x: cx + r3 - 10, y: cy },
-    { x: cx, y: cy + r3 - 10 },
-    { x: cx - r3 + 10, y: cy },
-  ];
-
-  return (
-    <div className="orbit-container" role="group" aria-label="Project overview">
-      <svg className="orbit-svg" viewBox="0 0 420 420" aria-hidden="true">
-        {/* Outer orbit ring */}
-        <circle cx={cx} cy={cy} r={r3} fill="none"
-          stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
-
-        {/* Middle orbit ring */}
-        <circle cx={cx} cy={cy} r={r2} fill="none"
-          stroke="rgba(77,216,232,0.08)" strokeWidth="1" />
-
-        {/* Inner dashed orbit ring */}
-        <circle cx={cx} cy={cy} r={r1} fill="none"
-          stroke="rgba(77,216,232,0.1)" strokeWidth="1"
-          strokeDasharray="4 6" />
-
-        {/* Crosshair lines through center */}
-        <line x1={cx} y1={cy - r3 - 8} x2={cx} y2={cy + r3 + 8}
-          stroke="rgba(77,216,232,0.05)" strokeWidth="1" />
-        <line x1={cx - r3 - 8} y1={cy} x2={cx + r3 + 8} y2={cy}
-          stroke="rgba(77,216,232,0.05)" strokeWidth="1" />
-
-        {/* Spoke lines from center to each node */}
-        {nodes.slice(0, projects.length).map((node, i) => (
-          <line key={i} x1={cx} y1={cy} x2={node.x} y2={node.y}
-            stroke="rgba(77,216,232,0.06)" strokeWidth="1" />
-        ))}
-
-        {/* Small tick marks on outer ring at 45° angles */}
-        {[45, 135, 225, 315].map((angle) => {
-          const rad = (angle * Math.PI) / 180;
-          const ix = cx + (r3 - 6) * Math.cos(rad);
-          const iy = cy + (r3 - 6) * Math.sin(rad);
-          const ox = cx + (r3 + 6) * Math.cos(rad);
-          const oy = cy + (r3 + 6) * Math.sin(rad);
-          return (
-            <line key={angle} x1={ix} y1={iy} x2={ox} y2={oy}
-              stroke="rgba(77,216,232,0.1)" strokeWidth="1" />
-          );
-        })}
-      </svg>
-
-      {/* Central dark orb with core dot */}
-      <div className="orbit-core" />
-      <div className="orbit-core-ring" />
-      <div className="orbit-core-dot" />
-
-      {/* Project nodes */}
-      {projects.slice(0, 4).map((name, index) => (
-        <div key={index} className={`orbit-node orbit-node-${nodePositions[index]}${index === 0 ? " orbit-node-active" : ""}`}>
-          <div className="orbit-node-dot" />
-          <span className="orbit-node-label" title={name}>{name}</span>
-        </div>
-      ))}
-
-      {/* Status info labels */}
-      <span className="orbit-info orbit-info-1 orbit-info-active">
-        {live ? `${projectCount} registered project${projectCount === 1 ? "" : "s"}` : "Context loaded"}
-      </span>
-      <span className="orbit-info orbit-info-2">
-        {live ? "Read-only snapshot" : "Codex handoff ready"}
-      </span>
-      <span className="orbit-info orbit-info-3">
-        {live ? (outputCount === null ? "Output count unavailable" : `${outputCount} indexed outputs`) : "Validation pending"}
-      </span>
-    </div>
-  );
-}
-
-/* -----------------------------------------------------------------------
-   Next action steps (timeline style)
-   ----------------------------------------------------------------------- */
 
 const actionSteps = [
   { number: "01", label: "Run validation" },
@@ -139,7 +45,7 @@ function ActionRow({ live }: { live: boolean }) {
 }
 
 /* -----------------------------------------------------------------------
-   Main App
+   Main App — three-column workspace
    ----------------------------------------------------------------------- */
 
 function App() {
@@ -156,10 +62,6 @@ function App() {
 
   const live = snapshot !== null;
   const project = selectProject(snapshot?.projects ?? [], selectedAlias);
-  const orbitProjects = snapshot
-    ? [project, ...snapshot.projects.filter((item) => item.alias !== project?.alias)]
-      .filter((item) => item !== undefined).map((item) => item.name)
-    : previewProjects;
   const projectStatus = !project ? "No registered projects"
     : !project.path_exists ? "Project unavailable"
     : !project.workspace_exists ? "Workspace unavailable"
@@ -168,44 +70,72 @@ function App() {
 
   return (
     <div className="command-space">
-      {/* ---- Top bar ---- */}
-      <div className="top-bar">
-        <div className="window-dots" aria-hidden="true">
-          <span className="window-dot red" />
-          <span className="window-dot yellow" />
-          <span className="window-dot green" />
-        </div>
-
-        <div className="brand-area">
-          <span className="brand-name">GHOST</span>
-        </div>
-
-        <div className="top-rule" />
-        <span className="top-title">COMMAND SPACE</span>
-        <div className="top-rule-right" />
-
-        <div className="top-status" role="status">
+      {/* ---- Compact top header ---- */}
+      <header className="app-header">
+        <span className="brand-name">GHOST</span>
+        <span className="header-sep" aria-hidden="true" />
+        <span className="header-title">COMMAND SPACE</span>
+        <span className="header-spacer" />
+        <div className="header-status" role="status">
           <span className="status-dot" />
           <span>{live ? "Live local read-only" : "Static preview"}</span>
         </div>
-      </div>
+        {live && (
+          <span className="header-project-count">
+            {snapshot.project_count} project{snapshot.project_count === 1 ? "" : "s"}
+          </span>
+        )}
+      </header>
 
-      {/* ---- Main content: greeting + orbit ---- */}
-      <div className="main-content">
-        <div className="left-panel">
-          <div className="greeting">
-            <h1>
-              Good evening,
-              <br />
-              Kavisara
-            </h1>
-            <p className="greeting-subtitle">
-              {live
-                ? `${snapshot.project_count} registered project${snapshot.project_count === 1 ? "" : "s"} in your local GHOST workspace.`
-                : "Your secure AI workflow coordinator is ready."}
-            </p>
+      {/* ---- Three-column workspace ---- */}
+      <div className="workspace">
+
+        {/* -- Left sidebar -- */}
+        <aside className="sidebar">
+          <span className="sidebar-section-title">Projects</span>
+
+          {live && project ? (
+            <>
+              <select className="project-select" aria-label="Current project"
+                value={project.alias} onChange={(event) => setSelectedAlias(event.target.value)}>
+                {snapshot.projects.map((item) => <option key={item.alias} value={item.alias}>{item.name}</option>)}
+              </select>
+
+              <ul className="sidebar-project-list">
+                {snapshot.projects.map((item) => (
+                  <li key={item.alias}
+                    className={`sidebar-project-item${item.alias === project.alias ? " active" : ""}`}
+                    onClick={() => setSelectedAlias(item.alias)}>
+                    <span className="sidebar-project-dot" />
+                    <span className="sidebar-project-name">{item.name}</span>
+                  </li>
+                ))}
+              </ul>
+            </>
+          ) : (
+            <ul className="sidebar-project-list">
+              {previewProjects.map((name) => (
+                <li key={name} className="sidebar-project-item">
+                  <span className="sidebar-project-dot" />
+                  <span className="sidebar-project-name">{name}</span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          <div className="sidebar-divider" />
+
+          <div className="sidebar-safety">
+            <div className="sidebar-safety-badge">
+              <span className="status-dot" />
+              {live ? projectStatus : "Read-only"}
+            </div>
+            <div>{live ? "Local metadata only" : "No live connection"}</div>
           </div>
+        </aside>
 
+        {/* -- Center panel -- */}
+        <main className="center">
           <div className="session-block">
             <span className="session-label">{live && !project?.active_session ? "Local project" : "Current Session"}</span>
             {live && project ? (
@@ -239,27 +169,28 @@ function App() {
               </details>
             )}
           </div>
-        </div>
 
-        <div className="right-panel">
-          <OrbitVisual projects={orbitProjects} live={live}
-            projectCount={snapshot?.project_count ?? 4} outputCount={project?.recent_output_count ?? null} />
-        </div>
+          {/* Latest work / action steps */}
+          {live ? <LatestWork key={project?.alias} project={project} mode={snapshot.mode} /> : <ActionRow live={false} />}
+        </main>
+
+        {/* -- Right panel: memory search -- */}
+        <aside className="right-panel">
+          <div className="right-panel-inner">
+            <div className="right-panel-header">
+              <div className="right-panel-title">Memory</div>
+              <div className="right-panel-helper">Search sessions, decisions, and artifacts across your projects.</div>
+            </div>
+            <MemorySearch mode={snapshot?.mode ?? "static-preview"} project={project} />
+          </div>
+        </aside>
       </div>
 
-      {/* ---- Next action row ---- */}
-      {live ? <LatestWork key={project?.alias} project={project} mode={snapshot.mode} /> : <ActionRow live={false} />}
-
-      {/* ---- Command bar ---- */}
-      <MemorySearch mode={snapshot?.mode ?? "static-preview"} project={project} />
-
-      {/* ---- Footer safety line ---- */}
-      <div className="safety-footer">
-        <span className="safety-rule" />
-        <span className="safety-text">
-          {live ? "Local metadata only • No commands • No file writes" : "Local-first • Secrets protected • Manual approval required"}
+      {/* ---- Bottom status strip ---- */}
+      <div className="status-strip">
+        <span className="status-strip-text">
+          {live ? "Local metadata only · No commands · No file writes" : "Local-first · Secrets protected · Manual approval required"}
         </span>
-        <span className="safety-rule" />
       </div>
     </div>
   );
