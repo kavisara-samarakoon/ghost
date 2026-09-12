@@ -2641,3 +2641,335 @@
     grid-template-columns: minmax(0, 1fr);
   }
 }
+
+/* Artifacts v1 — browse only the generated metadata already loaded. */
+.page-artifacts .desktop-page-header {
+  margin-bottom: 20px;
+}
+.artifacts-workspace {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.artifacts-overview {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.artifacts-overview .glass-panel {
+  min-width: 0;
+  max-height: none;
+  padding: 16px;
+  gap: 6px;
+}
+
+.artifacts-overview dt,
+.artifacts-overview span,
+.artifacts-preview-note,
+.artifacts-filter-row + p,
+.artifacts-match-count {
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 1.6;
+  overflow-wrap: anywhere;
+}
+
+.artifacts-overview dd {
+  font-size: 30px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.artifacts-overview .artifacts-overview-text {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 18px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.artifacts-filter-heading {
+  display: flex;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.artifacts-filters label {
+  display: block;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+
+.artifacts-filter-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.artifacts-filter-row input {
+  flex: 1;
+  min-width: 0;
+  padding: 12px 16px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-inset);
+  font-size: 14px;
+  cursor: text;
+}
+
+.artifacts-filter-row input::placeholder {
+  color: var(--muted);
+}
+
+.artifacts-filter-row + p {
+  margin-top: 10px;
+}
+
+.artifacts-filter-row button,
+.artifact-category-filters button,
+.artifacts-empty button,
+.artifacts-guidance button {
+  padding: 10px 14px;
+  border: 1px solid var(--border-strong);
+  border-radius: 8px;
+  font-size: 12px;
+  color: var(--accent);
+  transition: background 150ms ease-out;
+}
+
+.artifact-category-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.artifact-category-filters button {
+  display: inline-flex;
+  align-items: center;
+  gap: 12px;
+  color: var(--text-secondary);
+  border-radius: 100px;
+}
+
+.artifact-category-filters button[aria-pressed="true"] {
+  color: var(--accent);
+  background: var(--accent-glow);
+  border-color: var(--accent-dim);
+}
+
+.artifact-category-filters span {
+  font-size: 11px;
+}
+
+.artifacts-filter-row button:hover,
+.artifact-category-filters button:hover,
+.artifacts-empty button:hover,
+.artifacts-guidance button:hover {
+  background: var(--accent-glow);
+}
+
+.artifacts-browser {
+  display: grid;
+  grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr);
+  align-items: start;
+  gap: 24px;
+}
+
+.artifacts-browser > * {
+  min-width: 0;
+}
+
+.artifacts-browser h2 {
+  font-size: 18px;
+  letter-spacing: -0.01em;
+}
+
+.artifact-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  list-style: none;
+}
+
+.artifact-select-card {
+  width: 100%;
+  min-width: 0;
+  max-height: none;
+  padding: 20px;
+  text-align: left;
+  gap: 10px;
+}
+
+.artifact-select-card.selected {
+  border-color: rgba(77, 216, 232, 0.3);
+  background: rgba(19, 38, 48, 0.55);
+}
+
+.artifact-select-card:hover {
+  border-color: rgba(77, 216, 232, 0.3);
+}
+
+.artifact-card-meta {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: var(--text-secondary);
+}
+
+.artifact-card-meta > span:first-child {
+  color: var(--accent);
+}
+
+.artifact-select-card strong {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+
+.artifact-card-project,
+.artifact-card-summary,
+.artifact-card-path {
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+
+.artifact-card-summary {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+.artifact-card-path {
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.artifact-select-card .artifact-card-path {
+  padding-top: 10px;
+  border-top: 1px solid var(--border);
+}
+
+.artifact-selected h2 {
+  margin: 12px 0 24px;
+  font-size: 22px;
+  line-height: 1.4;
+}
+
+.artifact-selected-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 18px;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.artifact-selected-meta dt {
+  color: var(--text-secondary);
+  margin-bottom: 4px;
+  font-size: 12px;
+}
+
+.artifact-selected-meta dd {
+  overflow-wrap: anywhere;
+}
+
+.artifact-selected-meta > div:last-child {
+  grid-column: 1 / -1;
+}
+
+.artifact-selected-preview {
+  margin: 24px 0;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.artifact-selected-preview h3 {
+  font-size: 14px;
+}
+
+.artifact-selected-preview p,
+.artifacts-empty p,
+.artifacts-guidance p {
+  color: var(--text-secondary);
+  font-size: 14px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.artifact-selected .artifact-actions button {
+  padding: 10px 18px;
+  font-size: 13px;
+}
+
+.artifact-selected .artifact-action-state {
+  flex-basis: 100%;
+  margin-top: 6px;
+  font-size: 12px;
+}
+
+.artifact-selected .artifact-safety-note {
+  margin-top: 16px;
+  font-size: 11px;
+  line-height: 1.6;
+}
+
+.artifacts-empty,
+.artifacts-guidance {
+  gap: 16px;
+}
+
+.artifacts-empty button {
+  align-self: flex-start;
+}
+
+.artifacts-guidance h2 {
+  margin-bottom: 10px;
+}
+
+.artifacts-guidance code {
+  color: var(--text);
+  font: 0.9em var(--mono);
+}
+
+.artifacts-guidance nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+@media (max-width: 1100px) {
+  .artifacts-overview {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 860px) {
+  .artifacts-browser {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .artifacts-filter-row {
+    flex-wrap: wrap;
+  }
+
+  .artifacts-filter-row input {
+    flex-basis: 100%;
+  }
+}
