@@ -14,7 +14,7 @@
   /* Design tokens */
   --text: #e7edf4;
   --text-secondary: #97a8bb;
-  --muted: #5d7088;
+  --muted: #7c8da3;
   --accent: #4dd8e8;
   --accent-bright: #5ee7f6;
   --accent-dim: #3092a2;
@@ -28,6 +28,14 @@
   --border-strong: rgba(77, 216, 232, 0.16);
   --border-subtle: rgba(255, 255, 255, 0.04);
   --mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+
+  /* Glass morphism */
+  --glass-bg: rgba(12, 18, 28, 0.55);
+  --glass-border: rgba(77, 216, 232, 0.10);
+  --glass-blur: 12px;
+
+  /* Layout */
+  --nav-height: 52px;
 }
 
 * {
@@ -73,7 +81,12 @@ button:focus-visible, input:focus-visible {
 
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after {
-    animation-duration: 0.01ms !important;
-    transition-duration: 0.01ms !important;
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+
+  .btn-primary:hover {
+    transform: none;
   }
 }
