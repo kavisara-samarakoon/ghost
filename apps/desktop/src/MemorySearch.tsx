@@ -30,7 +30,7 @@ export default function MemorySearch({ mode, project }: { mode: GhostSnapshot["m
     } finally { busy.current = false; setPending(false); }
   }
 
-  return <div className="command-bar-area memory-search">
+  return <div className="memory-search">
     {response && <SearchResults response={response} onDismiss={() => setResponse(null)} />}
     <form role="search" aria-label="Search GHOST memory" onSubmit={(event) => { event.preventDefault(); void submit(); }}>
       <div className="memory-search-options">
@@ -46,12 +46,20 @@ export default function MemorySearch({ mode, project }: { mode: GhostSnapshot["m
           <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
         </svg>
         <input className="command-input" type="search" value={query} onChange={(event) => setQuery(event.target.value)}
-          maxLength={120} placeholder="Search sessions, decisions, outputs, and drafts…" aria-label="Search local memory"
+          maxLength={120} placeholder="Search sessions, decisions, outputs…" aria-label="Search local memory"
           autoComplete="off" spellCheck={false} disabled={pending} />
         <button className="command-send" type="submit" aria-label="Search local memory" disabled={pending}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><path d="M5 12h14m-6-6 6 6-6 6" /></svg>
         </button>
       </div>
     </form>
+    {!response && !pending && (
+      <div className="memory-empty-state">
+        <svg className="memory-empty-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.2" aria-hidden="true">
+          <circle cx="10.5" cy="10.5" r="6.5" /><path d="m16 16 5 5" />
+        </svg>
+        <span className="memory-empty-text">Search to surface sessions, decisions, outputs, and draft artifacts.</span>
+      </div>
+    )}
   </div>;
 }

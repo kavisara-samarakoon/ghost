@@ -38,3 +38,6 @@ __pycache__/
 .coverage
 htmlcov/
 .ghost-dev/
+
+# Local GHOST workspace (dogfooding)
+.ghost/
