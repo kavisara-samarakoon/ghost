@@ -13,6 +13,18 @@ pub fn markdown(name: &str) -> bool {
     name.strip_suffix(".md").is_some_and(safe_segment)
 }
 
+pub fn search_path(path: &str) -> bool {
+    if path.len() > 512 {
+        return false;
+    }
+    match path.split('/').collect::<Vec<_>>().as_slice() {
+        ["status.md" | "decisions.md" | "milestones.yaml" | "active-session.yaml"] => true,
+        ["outputs", "index.yaml"] => true,
+        ["outputs", "codex" | "terminal", file] => markdown(file),
+        _ => action_path(path),
+    }
+}
+
 /// Exact workspace-relative action categories; never normalize untrusted paths.
 pub fn action_path(path: &str) -> bool {
     if path.len() > 512 {

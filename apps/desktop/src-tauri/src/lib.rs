@@ -9,6 +9,22 @@ async fn load_ghost_snapshot() -> Result<snapshot::GhostSnapshot, &'static str> 
 }
 
 #[tauri::command(rename_all = "snake_case")]
+async fn search_ghost_memory(
+    window: tauri::WebviewWindow,
+    query: String,
+    project_alias: Option<String>,
+) -> Result<snapshot::search::SearchResponse, &'static str> {
+    if window.label() != "main" {
+        return Err("Local search is unavailable here.");
+    }
+    tauri::async_runtime::spawn_blocking(move || {
+        snapshot::search::from_environment(&query, project_alias.as_deref())
+    })
+    .await
+    .map_err(|_| "Local search could not be completed.")
+}
+
+#[tauri::command(rename_all = "snake_case")]
 fn open_ghost_artifact(
     window: tauri::WebviewWindow,
     project_alias: String,
@@ -38,7 +54,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             load_ghost_snapshot,
             open_ghost_artifact,
-            reveal_ghost_artifact
+            reveal_ghost_artifact,
+            search_ghost_memory
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

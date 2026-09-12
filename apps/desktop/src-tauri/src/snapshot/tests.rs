@@ -3,6 +3,7 @@ use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use tempfile::TempDir;
 mod artifact_actions;
+mod search;
 
 struct Fixture {
     _temp: TempDir,
