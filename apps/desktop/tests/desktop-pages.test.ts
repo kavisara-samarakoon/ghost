@@ -7,7 +7,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import ts from "typescript";
 import { clearMocks, mockIPC } from "@tauri-apps/api/mocks";
 import { sampleProjects } from "../src/preview-projects.ts";
-import { selectProject, type GhostProject } from "../src/ghost-snapshot.ts";
+import { selectProject, type GhostArtifact, type GhostProject } from "../src/ghost-snapshot.ts";
 
 // Reuse the installed compiler to render the real page components without a new test runtime.
 registerHooks({
@@ -29,6 +29,7 @@ registerHooks({
 const { default: DesktopPages } = await import("../src/DesktopPages.tsx");
 const { default: ProjectsPage, filterProjects, projectOverview } = await import("../src/ProjectsPage.tsx");
 const { default: SessionsPage, activeSessionCount, latestArtifactTime } = await import("../src/SessionsPage.tsx");
+const { ArtifactsView, filterArtifacts, latestDatedArtifact, selectedArtifact } = await import("../src/ArtifactsPage.tsx");
 const { default: App } = await import("../src/App.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
@@ -260,4 +261,138 @@ test("Sessions renders notes, goals, status and project notices as inert text", 
   const html = render("Sessions", [project], "live-local");
   assert.ok(!html.includes("<img"));
   assert.ok((html.match(/&lt;img/g) ?? []).length >= 4);
+});
+
+
+const artifactFixtures: GhostArtifact[] = [
+  { kind: "context-pack", title: "Release context", relative_path: "drafts/context-packs/release.md", created_at: "2026-09-10T10:00:00Z", preview: "Recorded release scope" },
+  { kind: "handoff", title: "Review handoff", relative_path: "drafts/handoffs/codex/review.md", created_at: null, preview: "Review checklist" },
+  { kind: "output", title: "Validation output", relative_path: "outputs/codex/20260912T100000000000Z-codex-output-abcdefgh.md", created_at: "2026-09-12T10:00:00Z", preview: "Recorded validation" },
+  { kind: "next-step", title: "Next review", relative_path: "drafts/next-steps/review.md", created_at: "invalid", preview: null },
+  { kind: "update-pack", title: "Milestone update", relative_path: "drafts/update-packs/m23/summary.md", created_at: "2026-09-11T10:00:00Z", preview: "Milestone summary" },
+];
+const artifactProject: GhostProject = { ...sampleProjects[0], name: "Release Workspace", alias: "release", path_exists: true, workspace_exists: true, recent_artifacts: artifactFixtures };
+
+function artifactViewProps(overrides: Partial<Parameters<typeof ArtifactsView>[0]> = {}): Parameters<typeof ArtifactsView>[0] {
+  return { project: artifactProject, mode: "static-preview", query: "", category: "all", selectedPath: null,
+    onQueryChange() {}, onCategoryChange() {}, onSelect() {}, onAction() {}, pendingPath: null, result: null, ...overrides };
+}
+
+function renderArtifacts(overrides: Partial<Parameters<typeof ArtifactsView>[0]> = {}) {
+  return renderToStaticMarkup(createElement(ArtifactsView, artifactViewProps(overrides)));
+}
+
+test("Artifacts renders loaded work and a selected detail in preview and live modes", () => {
+  for (const mode of ["static-preview", "live-local"] as const) {
+    const html = render("Artifacts", [artifactProject], mode);
+    assert.match(html, /<h1[^>]*>Artifacts<\/h1>/);
+    assert.match(html, /Generated work/);
+    assert.equal((html.match(/class="glass-panel artifact-select-card/g) ?? []).length, 5);
+    for (const artifact of artifactFixtures) assert.ok(html.includes(artifact.title));
+    assert.match(html, /id="selected-artifact"/);
+    assert.match(html, /Recorded release scope/);
+    assert.match(html, /Date unavailable/);
+    assert.ok(!html.includes('role="search"'));
+  }
+});
+
+test("artifact search combines title, type, project and safe path terms with category filtering", () => {
+  for (const [query, expected] of [["validation", 1], ["HANDOFF", 1], ["Workspace", 5], ["release", 5], ["m23/summary", 1], ["  ReLeAsE   context  ", 1], ["missing", 0]] as const) {
+    assert.equal(filterArtifacts(artifactProject, query, "all").length, expected);
+  }
+  for (const artifact of artifactFixtures) assert.deepEqual(filterArtifacts(artifactProject, "", artifact.kind), [artifact]);
+  assert.deepEqual(filterArtifacts(artifactProject, "milestone", "output"), []);
+  assert.deepEqual(filterArtifacts(undefined, "", "all"), []);
+});
+
+test("artifact selection stays visible or falls back to the first match and clears on no matches", () => {
+  const selected = artifactFixtures[4];
+  assert.equal(selectedArtifact(artifactFixtures, selected.relative_path), selected);
+  const html = renderArtifacts({ selectedPath: selected.relative_path });
+  assert.match(html, /id="selected-artifact-title">Milestone update/);
+  assert.match(html, /Milestone summary/);
+  const filtered = filterArtifacts(artifactProject, "validation", "all");
+  assert.equal(selectedArtifact(filtered, selected.relative_path), artifactFixtures[2]);
+  assert.equal(selectedArtifact([], selected.relative_path), undefined);
+  const empty = renderArtifacts({ query: "no-match" });
+  assert.match(empty, /No artifacts match/);
+  assert.ok(!empty.includes('id="selected-artifact"'));
+  assert.ok(!empty.includes('class="glass-panel artifact-select-card'));
+  assert.match(renderArtifacts({ project: sampleProjects[1] }), /No recent artifacts recorded/);
+});
+
+test("artifact filter, selection, and clear controls call only their frontend callbacks", () => {
+  const categories: string[] = [];
+  const selected: string[] = [];
+  const queries: string[] = [];
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Filtering and selecting must not invoke"));
+  const tree = ArtifactsView(artifactViewProps({ onCategoryChange: (value) => categories.push(value), onSelect: (value) => selected.push(value) }));
+  for (const button of buttonsIn(tree)) button.onClick();
+  assert.deepEqual(categories, ["all", "context-pack", "handoff", "output", "next-step", "update-pack"]);
+  assert.deepEqual(selected, artifactFixtures.map((artifact) => artifact.relative_path));
+  categories.length = 0;
+  const empty = ArtifactsView(artifactViewProps({ query: "no-match", category: "output", onQueryChange: (value) => queries.push(value), onCategoryChange: (value) => categories.push(value) }));
+  buttonsIn(empty)[0].onClick();
+  assert.deepEqual(queries, [""]);
+  assert.deepEqual(categories, ["all"]);
+});
+
+test("latest artifact uses only valid timestamps and leaves snapshot order unchanged", () => {
+  const original = [...artifactFixtures];
+  assert.equal(latestDatedArtifact(artifactFixtures), artifactFixtures[2]);
+  assert.deepEqual(artifactFixtures, original);
+  assert.equal(latestDatedArtifact([artifactFixtures[1], artifactFixtures[3]]), undefined);
+  assert.equal(latestDatedArtifact([]), undefined);
+  assert.match(renderArtifacts({ project: sampleProjects[0] }), /No dated artifacts loaded/);
+});
+
+test("Artifacts keeps action guards, pending state and feedback tied to the selected path", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Rendering must not perform artifact actions"));
+  for (const artifact of artifactFixtures) {
+    const html = renderArtifacts({ mode: "live-local", selectedPath: artifact.relative_path });
+    assert.ok(html.includes(`aria-label="Open ${artifact.title}"`));
+    assert.ok(html.includes(`aria-label="Reveal ${artifact.title}"`));
+  }
+  assert.ok(!renderArtifacts().includes('aria-label="Open '));
+  for (const project of [{ ...artifactProject, workspace_exists: false }, { ...artifactProject, path_exists: false }, { ...artifactProject, alias: "Invalid Alias" }]) {
+    assert.ok(!renderArtifacts({ mode: "live-local", project }).includes('aria-label="Open '));
+  }
+  const pending = renderArtifacts({ mode: "live-local", pendingPath: artifactFixtures[0].relative_path });
+  assert.equal((pending.match(/disabled=""/g) ?? []).length, 2);
+  assert.match(pending, /Checking artifact/);
+  const result = { path: artifactFixtures[0].relative_path, state: "rejected" as const };
+  assert.match(renderArtifacts({ mode: "live-local", result }), /Action rejected/);
+  assert.ok(!renderArtifacts({ mode: "live-local", result, selectedPath: artifactFixtures[1].relative_path }).includes("Action rejected"));
+});
+
+test("Artifacts hides unsafe paths from rendering and filtering and renders previews as inert text", () => {
+  const unsafe = ["/private/unsafe.md", "drafts/context-packs/../private.md"];
+  for (const relative_path of unsafe) {
+    const artifact = { ...artifactFixtures[0], relative_path, preview: '<img src="invalid" onerror="alert(1)">' };
+    const project = { ...artifactProject, recent_artifacts: [artifact] };
+    const html = renderArtifacts({ mode: "live-local", project });
+    assert.ok(!html.includes(relative_path));
+    assert.match(html, /Relative path unavailable/);
+    assert.ok(!html.includes('aria-label="Open '));
+    assert.ok(!html.includes("<img"));
+    assert.match(html, /&lt;img/);
+    assert.deepEqual(filterArtifacts(project, "private", "all"), []);
+  }
+});
+
+test("Artifacts navigation preserves project selection without IPC or memory search", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Artifact navigation must never invoke"));
+  const destinations: string[] = [];
+  const tree = ArtifactsView(artifactViewProps({ onNavigate(page) {
+    destinations.push(page);
+    const project = selectProject([artifactProject, sampleProjects[1]], artifactProject.alias);
+    assert.equal(project, artifactProject);
+    assert.match(render(page, [project!]), new RegExp(`<h1[^>]*>${page}</h1>`));
+  } }));
+  for (const button of buttonsIn(tree)) button.onClick();
+  assert.deepEqual(destinations, ["Sessions", "Memory", "Projects"]);
+  assert.ok(!render("Artifacts", [artifactProject], "live-local").includes('role="search"'));
 });

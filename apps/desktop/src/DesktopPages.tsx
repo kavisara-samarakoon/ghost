@@ -1,6 +1,6 @@
 import { useState, type RefObject } from "react";
 import type { GhostProject, GhostSnapshot } from "./ghost-snapshot.ts";
-import LatestWork from "./LatestWork.tsx";
+import ArtifactsPage from "./ArtifactsPage.tsx";
 import MemorySearch from "./MemorySearch.tsx";
 import ProjectsPage from "./ProjectsPage.tsx";
 import SessionsPage from "./SessionsPage.tsx";
@@ -24,7 +24,7 @@ const descriptions = {
   Projects: "Coordinate local projects, sessions, memory, and generated work from one secure workspace.",
   Sessions: "Review active project sessions, goals, notes, and the next safe step without running commands from the desktop.",
   Memory: "Search local sessions, decisions, outputs, and drafts.",
-  Artifacts: "Review the outputs and drafts that carry your work forward.",
+  Artifacts: "Review context packs, handoffs, outputs, and drafts created by GHOST — without unsafe desktop execution.",
 };
 
 function ProjectPicker({ projects, project, onSelect }: Pick<PageProps, "projects" | "project" | "onSelect">) {
@@ -41,10 +41,10 @@ export default function DesktopPages(props: PageProps) {
   const { page, project, mode, projects, onSelect, notice, warnings, searchInputRef } = props;
   return <div className={`desktop-page page-${page.toLowerCase()}`}>
     <header className="desktop-page-header">
-      <div><p className="page-eyebrow">{page === "Sessions" ? "Workflow continuity" : mode === "live-local" ? "Your local workspace" : "Static preview · Sample data"}</p><h1 tabIndex={-1}>{page}</h1><p>{descriptions[page]}</p></div>
+      <div><p className="page-eyebrow">{page === "Sessions" ? "Workflow continuity" : page === "Artifacts" ? "Generated work" : mode === "live-local" ? "Your local workspace" : "Static preview · Sample data"}</p><h1 tabIndex={-1}>{page}</h1><p>{descriptions[page]}</p></div>
       {page === "Projects" ? (
         <span className="page-badge projects-mode-badge">{mode === "live-local" ? "Live local read-only" : "Desktop preview"}</span>
-      ) : page === "Sessions" ? (
+      ) : page === "Sessions" || page === "Artifacts" ? (
         <div className="sessions-header-controls">
           <span className="page-badge">{mode === "live-local" ? "Live local read-only" : "Desktop preview"}</span>
           <ProjectPicker projects={projects} project={project} onSelect={onSelect} />
@@ -56,10 +56,6 @@ export default function DesktopPages(props: PageProps) {
     {page === "Projects" && <ProjectsPage {...props} query={projectQuery} onQueryChange={setProjectQuery} />}
     {page === "Sessions" && <SessionsPage projects={projects} project={project} mode={mode} onNavigate={props.onNavigate} />}
     {page === "Memory" && <section className="glass-panel page-panel memory-page-panel" aria-label="Search workspace memory"><MemorySearch mode={mode} project={project} searchInputRef={searchInputRef} /></section>}
-    {page === "Artifacts" && <section className="glass-panel page-panel artifacts-page-panel">
-      <div className="page-panel-heading"><h2>{project ? `${project.name} · Recent artifacts` : "Recent artifacts"}</h2><span className="page-badge">{project?.recent_artifacts.length ?? 0} loaded</span></div>
-      <p className="page-secondary">{mode === "static-preview" ? "Sample drafts for preview. Open and Reveal are available for eligible files in a live local workspace." : "Select a file to read its recorded preview and available actions."}</p>
-      <LatestWork key={project?.alias} project={project} mode={mode} />
-    </section>}
+    {page === "Artifacts" && <ArtifactsPage key={project?.alias} project={project} mode={mode} onNavigate={props.onNavigate} />}
   </div>;
 }
