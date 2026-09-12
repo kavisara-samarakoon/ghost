@@ -62,6 +62,29 @@ jobs:
         run: pnpm install --frozen-lockfile
       - name: Build desktop frontend
         run: pnpm build
+      - name: Test desktop frontend safety gates
+        run: pnpm test
+
+  desktop-native:
+    name: Desktop native safety (macOS)
+    # Exercise AppKit file-identity assertions as well as the portable reader tests.
+    runs-on: macos-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: apps/desktop/src-tauri
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - name: Set up stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+      - name: Test native storage and action safeguards
+        run: cargo test --locked
+      - name: Check native desktop
+        run: cargo check --locked
 
   release-scripts:
     name: Release scripts
@@ -111,7 +134,7 @@ jobs:
             base="$PUSH_BEFORE_SHA"
           fi
           git diff --check "$base" HEAD
-      - name: Reject tracked Python bytecode and cache directories
+      - name: Reject tracked Python caches and desktop build artifacts
         run: |
           # NUL delimiters also handle filenames containing spaces or newlines.
           git ls-files -z | while IFS= read -r -d '' file; do
@@ -119,6 +142,11 @@ jobs:
               __pycache__|*/__pycache__|__pycache__/*|*/__pycache__/*|*.pyc)
                 echo '::error::Remove tracked Python bytecode/cache files from the index.'
                 printf 'Tracked cache path: %q\n' "$file"
+                exit 1
+                ;;
+              apps/desktop/dist/*|apps/desktop/src-tauri/target/*|apps/desktop/src-tauri/gen/schemas/*)
+                echo '::error::Remove tracked desktop build artifacts from the index.'
+                printf 'Tracked build path: %q\n' "$file"
                 exit 1
                 ;;
             esac
