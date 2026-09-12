@@ -1,16 +1,34 @@
-import { useState } from "react";
-import { artifactDate, type GhostProject } from "./ghost-snapshot";
+import { useRef, useState } from "react";
+import { artifactDate, type GhostArtifact, type GhostProject, type GhostSnapshot } from "./ghost-snapshot";
+import { actOnArtifact, actionMessages, canActOnArtifact, type ArtifactAction, type ArtifactActionState } from "./artifact-actions";
 
 const kindLabels = {
   output: "Output", handoff: "Handoff", "context-pack": "Context pack",
   "next-step": "Next step", "update-pack": "Update pack",
 };
 
-export default function LatestWork({ project }: { project: GhostProject | undefined }) {
+export default function LatestWork({ project, mode }: { project: GhostProject | undefined; mode: GhostSnapshot["mode"] }) {
   const [showAll, setShowAll] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
+  const busy = useRef(false);
+  const [result, setResult] = useState<{ path: string; state: ArtifactActionState } | null>(null);
   const artifacts = project?.recent_artifacts ?? [];
   const visible = showAll ? artifacts : artifacts.slice(0, 3);
   const hasWarnings = (project?.warnings.length ?? 0) > 0;
+
+  async function handleAction(artifact: GhostArtifact, action: ArtifactAction) {
+    if (busy.current) return;
+    busy.current = true;
+    setPending(artifact.relative_path);
+    setResult(null);
+    try {
+      const state = await actOnArtifact(mode, project, artifact, action);
+      setResult({ path: artifact.relative_path, state });
+    } finally {
+      busy.current = false;
+      setPending(null);
+    }
+  }
 
   return (
     <section className="next-action-area latest-work" aria-labelledby="latest-work-title">
@@ -39,12 +57,25 @@ export default function LatestWork({ project }: { project: GhostProject | undefi
                 <div className="artifact-preview">
                   <p>{artifact.preview ?? "No preview text recorded."}</p>
                   <span className="artifact-path">{artifact.relative_path}</span>
+                  {canActOnArtifact(mode, project, artifact) && (
+                    <div className="artifact-actions">
+                      <button type="button" disabled={pending !== null} onClick={() => void handleAction(artifact, "open")}
+                        aria-label={`Open ${artifact.title}`}>Open</button>
+                      <button type="button" disabled={pending !== null} onClick={() => void handleAction(artifact, "reveal")}
+                        aria-label={`Reveal ${artifact.title}`}>Reveal</button>
+                      <span className="artifact-action-state" role="status" aria-live="polite">
+                        {pending === artifact.relative_path ? "Checking artifact…"
+                          : result?.path === artifact.relative_path ? actionMessages[result.state] : ""}
+                      </span>
+                    </div>
+                  )}
                 </div>
               </details>
             </li>
           ))}
         </ul>
       )}
+      {mode === "live-local" && artifacts.length > 0 && <p className="artifact-safety-note">Only .ghost artifacts can be opened.</p>}
     </section>
   );
 }

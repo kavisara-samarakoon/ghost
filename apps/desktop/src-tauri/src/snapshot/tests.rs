@@ -2,6 +2,7 @@ use super::*;
 use std::fs;
 use std::os::unix::fs::{symlink, PermissionsExt};
 use tempfile::TempDir;
+mod artifact_actions;
 
 struct Fixture {
     _temp: TempDir,
@@ -110,6 +111,47 @@ impl Fixture {
 }
 
 const SESSION_ID: &str = "20260911T123456123456Z-abcdef01";
+
+#[test]
+fn artifact_actions_resolve_supported_files_without_writes_or_native_launches() {
+    let fixture = Fixture::new();
+    fixture.session("Review release");
+    let output = fixture.output(1, "codex");
+    fixture.output_index(vec![output.clone()]);
+    let mut paths = vec![
+        output["path"].as_str().unwrap().to_owned(),
+        format!("sessions/{SESSION_ID}/notes.md"),
+        format!("sessions/{SESSION_ID}/session.yaml"),
+    ];
+    for path in [
+        "drafts/context-packs/context.md",
+        "drafts/next-steps/next.md",
+        "drafts/update-packs/pack/README-update.md",
+        "drafts/handoffs/codex/handoff.md",
+        "drafts/handoffs/chatgpt/handoff.md",
+        "drafts/handoffs/gemini/handoff.md",
+        "drafts/handoffs/antigravity/handoff.md",
+    ] {
+        fixture.artifact(path, "# Review draft");
+        paths.push(path.into());
+    }
+    let before = fixture_inventory(&fixture.root);
+    for path in paths {
+        let target = actions::resolve(&fixture.home, "example", &path).unwrap();
+        assert!(target.revalidate().is_ok());
+        #[cfg(target_os = "macos")]
+        assert!(target.reference_url().unwrap().isFileReferenceURL());
+        let state = actions::perform(
+            &fixture.home,
+            "example",
+            &path,
+            actions::Action::Open,
+            |_, _| actions::ActionState::Opened,
+        );
+        assert_eq!(state, actions::ActionState::Opened);
+    }
+    assert_eq!(fixture_inventory(&fixture.root), before);
+}
 
 #[test]
 fn environment_resolution_never_initializes_or_falls_back_from_invalid_override() {

@@ -13,6 +13,26 @@ pub fn markdown(name: &str) -> bool {
     name.strip_suffix(".md").is_some_and(safe_segment)
 }
 
+/// Exact workspace-relative action categories; never normalize untrusted paths.
+pub fn action_path(path: &str) -> bool {
+    if path.len() > 512 {
+        return false;
+    }
+    let parts: Vec<_> = path.split('/').collect();
+    match parts.as_slice() {
+        ["outputs", kind, file] => file
+            .strip_suffix(".md")
+            .is_some_and(|id| markdown(file) && output_path(id, kind, path)),
+        ["drafts", "context-packs" | "next-steps", file] => markdown(file),
+        ["drafts", "handoffs", "codex" | "chatgpt" | "gemini" | "antigravity", file] => {
+            markdown(file)
+        }
+        ["drafts", "update-packs", pack, file] => safe_segment(pack) && markdown(file),
+        ["sessions", id, "session.yaml" | "notes.md"] => session_id(id),
+        _ => false,
+    }
+}
+
 pub fn session_id(id: &str) -> bool {
     let bytes = id.as_bytes();
     bytes.len() == 31
