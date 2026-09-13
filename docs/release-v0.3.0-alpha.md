@@ -42,6 +42,22 @@ reviewing projects, sessions, memory, and artifacts while preserving strict safe
 - This alpha is intended for local dogfooding, not public production use.
 - The macOS app and DMG are not Apple-signed or notarized.
 
+## Release Assets & Verification
+
+- Artifact: `GHOST_0.3.0-alpha_aarch64.dmg`
+- Target: macOS Apple Silicon / `aarch64`
+- SHA256: `3ae94ed728819d0d5e1c96da6aa309365692624352a2e27f0227ae546083b783`
+
+Verify the downloaded artifact in Terminal:
+
+```sh
+shasum -a 256 GHOST_0.3.0-alpha_aarch64.dmg
+```
+
+This is an unsigned and not notarized alpha build. On first open, macOS may
+require you to Control-click or right-click `GHOST.app`, choose **Open**, and
+confirm **Open**.
+
 ## Validation checklist
 
 - [x] CLI tests and Ruff checks.
