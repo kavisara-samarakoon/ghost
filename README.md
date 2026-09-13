@@ -2,6 +2,10 @@
 
 **GitHub, Handoff, Operations, Search, and Tracking**
 
+<p align="center">
+  <img src="docs/assets/ghost-v0.3.0-alpha-launch.png" alt="GHOST v0.3.0-alpha local-first workflow assistant preview" width="100%" />
+</p>
+
 ## Overview
 
 GHOST is a local-first workflow assistant that combines a Python CLI workflow
@@ -47,11 +51,10 @@ scope, known limitations, and verification details.
 
 ## CLI setup from source
 
-The CLI requires Python 3.11 or newer. Replace `<repo-url>` with the public
-repository URL after the repository is published:
+The CLI requires Python 3.11 or newer:
 
 ```sh
-git clone <repo-url>
+git clone https://github.com/kavisara-samarakoon/ghost.git
 cd ghost/apps/cli
 python3 -m venv .venv
 ./.venv/bin/python -m pip install --upgrade pip
