@@ -2,59 +2,102 @@
 
 **GitHub, Handoff, Operations, Search, and Tracking**
 
-GHOST is a local-first personal AI workflow coordinator for Kavisara Samarakoon.
-The active MVP is the Python CLI and workflow engine in `apps/cli`. Milestone 1
-provides local initialization, project registration, project workspaces, and audit logs.
-Milestone 2 adds local sessions with goals, timestamped notes, and retained history.
-Milestone 3 generates local context packs and AI handoff drafts from workspace records.
-Milestone 4 stores sanitized supplied outputs and generates deterministic next-step drafts.
-Milestone 5 creates review-only README, release, social, portfolio, and summary update packs.
-Milestone 6 adds read-only storage health checks with `ghost doctor`.
-Milestone 7 connects these features in an isolated, fictional NEXORA demo.
-Milestone 8 adds `ghost version` and a v0.1.0 release-candidate review checklist.
-AI integrations and workflow execution are not implemented yet.
+## Overview
 
-The [v0.3.0-alpha checkpoint](docs/release-v0.3.0-alpha.md) is the first strong usable
-local MVP desktop checkpoint: Command cockpit, Projects, Sessions, Memory, and Artifacts
-pages backed by read-only snapshots, bounded search, and click-only Open/Reveal actions.
-CLI workflow behavior is unchanged apart from version metadata.
+GHOST is a local-first workflow assistant that combines a Python CLI workflow
+engine with a companion macOS desktop cockpit. The CLI is the controlled write
+path for creating projects, sessions, notes, outputs, context packs, handoffs,
+and update packs. The desktop app provides safe review, search, and navigation
+over approved local GHOST data without performing workflow writes.
 
-The CLI is local-first and draft-first; actions beyond preparing local records
-require human approval. See the [alpha checkpoint](docs/release-v0.3.0-alpha.md)
-for the current release scope and versions. The version
-number does not imply a published release or production readiness.
+GHOST stores workflow records locally and keeps generated material draft-first.
+The desktop app does not execute the CLI, shell commands, AI calls, or release
+operations.
 
-## Setup
+## Release status
 
-Requires Python 3.11 or newer. From the repository root:
+The current prerelease is **v0.3.0-alpha — Local MVP Desktop Checkpoint**. It is
+an alpha build for local dogfooding and is not production-ready. The available
+macOS DMG targets Apple Silicon (`aarch64`) only. The app and DMG are unsigned
+and not notarized by Apple.
+
+See the [v0.3.0-alpha release notes](docs/release-v0.3.0-alpha.md) for the exact
+scope, known limitations, and verification details.
+
+## Download and install GHOST desktop
+
+1. Go to [GitHub Releases](https://github.com/kavisara-samarakoon/ghost/releases).
+2. Download `GHOST_0.3.0-alpha_aarch64.dmg`.
+3. In Terminal, verify the downloaded file:
+
+   ```sh
+   shasum -a 256 GHOST_0.3.0-alpha_aarch64.dmg
+   ```
+
+   Expected SHA256:
+
+   ```text
+   3ae94ed728819d0d5e1c96da6aa309365692624352a2e27f0227ae546083b783
+   ```
+
+4. Open the DMG and drag `GHOST.app` to `/Applications`.
+5. On first open, macOS Gatekeeper may block the app because this alpha is
+   unsigned and not notarized. Control-click or right-click `GHOST.app`, choose
+   **Open**, then confirm **Open**.
+
+## CLI setup from source
+
+The CLI requires Python 3.11 or newer. Replace `<repo-url>` with the public
+repository URL after the repository is published:
 
 ```sh
-cd apps/cli
+git clone <repo-url>
+cd ghost/apps/cli
 python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+./.venv/bin/python -m pip install --upgrade pip
+./.venv/bin/python -m pip install -e ".[dev]"
+./.venv/bin/ghost version
+./.venv/bin/ghost doctor
+./.venv/bin/ghost init
 ```
 
-## First commands
+## Core CLI workflow quickstart
 
-With the virtual environment active, from the repository root:
+From `ghost/apps/cli`, replace the angle-bracketed values with your local
+project details:
 
 ```sh
-ghost version
-ghost demo nexora
+./.venv/bin/ghost project add <alias> --path "<project path>" --name "<Project Name>"
+./.venv/bin/ghost project list
+./.venv/bin/ghost session start <alias> --goal "<goal>"
+./.venv/bin/ghost session note "<note text>" --project <alias>
+./.venv/bin/ghost session status
+./.venv/bin/ghost output add --type <codex|terminal> --project <alias> --file "<path>" --title "<title>"
+./.venv/bin/ghost next <alias>
+./.venv/bin/ghost context pack <alias>
+./.venv/bin/ghost handoff <codex|chatgpt|gemini|antigravity> <alias>
+./.venv/bin/ghost update-pack --project <alias>
 ```
 
-The demo creates a fictional project and isolated storage in a fresh temporary
-directory. Review its printed `DEMO-REPORT.md` before taking any further action.
-It does not select or modify real project repositories. For manual registration,
-see [CLI setup commands](apps/cli/README.md#commands).
+Use the CLI to create or update workflow records, then open the desktop app to
+review the resulting projects, sessions, memory, and artifacts. Return to the
+CLI whenever a workflow write is needed. The desktop reads approved local GHOST
+data but does not invoke the CLI or modify workflow records.
 
 `GHOST_HOME` selects the global storage directory; without it, GHOST uses
 `~/.ghost`. Each registered project gets its own `<project-root>/.ghost/`
 workspace regardless of this override. Choose a temporary project directory if
 you do not want a workspace in the repository. Project workspaces are not
 automatically added to Git's ignore rules; review their contents before staging.
+
+## Desktop page overview
+
+- **Command:** Workflow cockpit showing the current project and workflow status.
+- **Projects:** Review and select registered local workspaces.
+- **Sessions:** Review active session goals, notes, and status.
+- **Memory:** Search approved local GHOST memory locations after explicit submit.
+- **Artifacts:** Review generated drafts and use safe **Open** or **Reveal** actions
+  for approved artifacts.
 
 ## Command overview
 
@@ -182,15 +225,29 @@ OS. Each invocation creates a separate run. Existing project paths are not
 accepted. See [the demo walkthrough](docs/demo-workflow.md) for follow-up commands,
 repeatability, and failure handling.
 
-## Safety and validation
+## Safety boundaries and limitations
+
+- The desktop does not run shell commands or execute the GHOST CLI.
+- The desktop does not call AI APIs or network services.
+- The desktop does not publish, deploy, merge, or release automatically.
+- Desktop workflow write actions are not implemented yet; the CLI remains the
+  controlled write path.
+- Desktop refresh may require reopening the app.
+- Desktop search is limited to approved local GHOST memory locations and requires
+  explicit submit.
+- Safe **Open** and **Reveal** actions are limited to approved local artifacts.
+- The current macOS app and DMG are unsigned and not notarized.
+- Do not store secrets in GHOST notes or outputs. Free-form text is not a complete
+  secret scanner, and workflow content remains plaintext in local storage.
 
 The CLI only writes local GHOST context files. It does not read `.env` files,
 call AI APIs, execute terminal commands, automate GitHub, or use cloud services.
 Workflows are draft-first: creating a draft or workspace never approves an action.
-Audit metadata redacts sensitive keys, including nested values. Free-form text
-is not a secret scanner; do not put credentials in names, paths, goals, or notes.
-Session audit events omit goal and note contents. Those contents remain plaintext
-in the local workspace, and session status displays goals.
+Audit metadata redacts sensitive keys, including nested values. Session audit
+events omit goal and note contents, but those contents remain plaintext in the
+local workspace and session status displays goals.
+
+## Development validation
 
 From `apps/cli`, with the virtual environment active:
 
