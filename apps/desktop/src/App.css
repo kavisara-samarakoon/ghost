@@ -3614,3 +3614,23 @@
     min-height: 0;
   }
 }
+/* M29: local request preparation and explicit review. */
+.action-requests { padding: 28px; margin-top: 24px; }
+.action-requests > p, .request-review p { color: var(--text-secondary, #a8b3c7); line-height: 1.65; }
+.action-requests fieldset { border: 0; padding: 0; margin: 22px 0; min-width: 0; }
+.request-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }
+.action-requests label { display: grid; gap: 8px; margin-bottom: 18px; font-size: 13px; }
+.action-requests input, .action-requests select, .action-requests textarea {
+  width: 100%; box-sizing: border-box; border: 1px solid rgba(148, 180, 220, .25);
+  background: #0c1423; color: #edf3ff; border-radius: 10px; padding: 12px; font: inherit;
+}
+.action-requests textarea { resize: vertical; }
+.action-requests :focus-visible { outline: 2px solid #67d6ec; outline-offset: 3px; }
+.action-requests :disabled { opacity: .5; cursor: not-allowed; }
+.request-review { margin-top: 24px; padding: 20px; border: 1px solid rgba(148, 180, 220, .25); border-radius: 12px; }
+.request-review pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; line-height: 1.6; }
+.request-feedback { overflow-wrap: anywhere; }
+.request-list { padding-left: 20px; }
+.request-list li { padding: 8px 0; }
+.request-list span { display: block; color: #a8b3c7; font-size: 12px; overflow-wrap: anywhere; margin-top: 5px; }
+@media (max-width: 680px) { .request-fields { grid-template-columns: 1fr; } .action-requests { padding: 20px; } }

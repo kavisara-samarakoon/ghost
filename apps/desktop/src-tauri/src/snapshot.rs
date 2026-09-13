@@ -1,8 +1,9 @@
-//! Read allowlisted local metadata without modifying storage or executing workflows.
+//! Read allowlisted local metadata. Only the separate requests module writes pending drafts.
 pub mod actions;
 mod artifacts;
 mod names;
 mod reader;
+pub mod requests;
 pub mod search;
 mod session;
 mod text;
@@ -22,12 +23,14 @@ pub struct GhostSnapshot {
     storage_detected: bool,
     project_count: usize,
     projects: Vec<ProjectSnapshot>,
+    recent_action_requests: Vec<requests::RecentRequest>,
     warnings: Vec<String>,
     safety: Safety,
 }
 
 #[derive(Serialize)]
 struct Safety {
+    // Guarantees for the snapshot operation, not the separate request save command.
     read_only: bool,
     no_shell_execution: bool,
     no_cli_execution: bool,
@@ -85,6 +88,7 @@ impl GhostSnapshot {
             storage_detected: false,
             project_count: 0,
             projects: Vec::new(),
+            recent_action_requests: Vec::new(),
             warnings: Vec::new(),
             safety: Safety {
                 read_only: true,
@@ -258,6 +262,11 @@ fn load(home: &Path) -> GhostSnapshot {
     snapshot.project_count = snapshot.projects.len();
     if registered_count > 0 && snapshot.projects.is_empty() {
         snapshot.mode = "static-preview";
+    }
+    // Optional requests use the remaining budget after core workflow metadata.
+    match requests::recent(&directory, &mut budget) {
+        Ok(requests) => snapshot.recent_action_requests = requests,
+        Err(error) => warn(&mut snapshot.warnings, "action-requests", error),
     }
     snapshot
 }

@@ -4,6 +4,7 @@ import DesktopPages, { pageNames, type DesktopPage } from "./DesktopPages";
 import { sampleProjects } from "./preview-projects";
 import ghostLogo from "./assets/brand/ghost-logo.png";
 import "./App.css";
+import ActionRequests from "./ActionRequests";
 
 /**
  * GHOST Command Space — Hero-style command center layout.
@@ -120,6 +121,8 @@ const commandActions = [
 ] as const satisfies ReadonlyArray<{ page: Exclude<DesktopPage, "Command">; label: string; detail: string }>;
 
 type CommandPageProps = {
+  recentRequests?: GhostSnapshot["recent_action_requests"];
+  onRequestSaved?: () => void;
   projects: GhostProject[];
   project?: GhostProject;
   mode: GhostSnapshot["mode"];
@@ -129,7 +132,7 @@ type CommandPageProps = {
   onNavigate: (page: Exclude<DesktopPage, "Command">) => void;
 };
 
-export function CommandPage({ projects, project, mode, notice, warnings, onSelect, onNavigate }: CommandPageProps) {
+export function CommandPage({ projects, project, mode, notice, warnings, onSelect, onNavigate, recentRequests, onRequestSaved }: CommandPageProps) {
   const preview = mode === "static-preview";
   const session = project?.active_session;
   const artifact = project?.recent_artifacts[0];
@@ -215,6 +218,8 @@ export function CommandPage({ projects, project, mode, notice, warnings, onSelec
         </section>
       </div>
 
+      <ActionRequests projects={projects} project={project} available={!preview} recent={recentRequests} onSaved={onRequestSaved} />
+
       <div className="command-guidance-grid">
         <section className="glass-panel command-safety" aria-labelledby="command-safety-title">
           <div className="command-panel-heading">
@@ -223,6 +228,7 @@ export function CommandPage({ projects, project, mode, notice, warnings, onSelec
           </div>
           <ul>
             <li>Desktop data is a read-only local snapshot.</li>
+            <li>Action requests save pending local drafts and audit metadata only.</li>
             <li>Open and Reveal are limited to approved generated artifacts.</li>
             <li>Memory search runs only after explicit submit.</li>
             <li>Generated work remains draft-first.</li>
@@ -319,6 +325,7 @@ function App() {
       {/* ---- Scrollable main content ---- */}
       <main ref={mainRef} className={activePage === "Command" ? "hero-main" : "pages-main"}>
         {activePage === "Command" ? <CommandPage projects={projects} project={project}
+          recentRequests={snapshot?.recent_action_requests} onRequestSaved={() => { void loadGhostSnapshot().then(setSnapshot); }}
           mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}
           onSelect={setSelectedAlias} onNavigate={handleNavClick} /> : <DesktopPages key={activePage} page={activePage} projects={projects} project={project}
           mode={snapshot?.mode ?? "static-preview"} notice={notice} warnings={snapshot?.warnings ?? []}

@@ -13,6 +13,7 @@ pub const MAX_SEARCH_READS: usize = 256;
 #[derive(Clone, Copy)]
 enum Scope {
     Root,
+    ActionRequests,
     Workspace,
     Sessions,
     Session,
@@ -28,6 +29,7 @@ enum Scope {
 impl Scope {
     fn child(self, name: &str) -> Option<Self> {
         match (self, name) {
+            (Self::Root, "action-requests") => Some(Self::ActionRequests),
             (Self::Root, ".ghost") => Some(Self::Workspace),
             (Self::Workspace, "sessions") => Some(Self::Sessions),
             (Self::Workspace, "outputs") => Some(Self::Outputs),
@@ -47,6 +49,7 @@ impl Scope {
 
     fn allows_file(self, name: &str) -> bool {
         match self {
+            Self::ActionRequests => super::requests::safe_filename(name),
             Self::Root => name == "projects.yaml",
             Self::Workspace => matches!(
                 name,
@@ -194,7 +197,7 @@ mod platform {
         ) -> Result<Listing, &'static str> {
             if !matches!(
                 self.1,
-                Scope::Markdown | Scope::UpdatePacks | Scope::UpdatePack
+                Scope::Markdown | Scope::UpdatePacks | Scope::UpdatePack | Scope::ActionRequests
             ) && !(search && matches!(self.1, Scope::Sessions | Scope::OutputType))
             {
                 return Err("Directory scanning is outside the metadata allowlist.");
@@ -224,7 +227,9 @@ mod platform {
                     listing.skipped = true;
                     continue;
                 };
-                let allowed = if matches!(self.1, Scope::Sessions) {
+                let allowed = if matches!(self.1, Scope::ActionRequests) {
+                    super::super::requests::safe_filename(name)
+                } else if matches!(self.1, Scope::Sessions) {
                     names::session_id(name)
                 } else if directories {
                     names::safe_segment(name)
