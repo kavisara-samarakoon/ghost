@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import type { RecentRequest } from "./action-requests.ts";
 
 export interface GhostSession {
   id: string;
@@ -47,8 +48,10 @@ export interface GhostSnapshot {
   storage_detected: boolean;
   project_count: number;
   projects: GhostProject[];
+  recent_action_requests?: RecentRequest[];
   warnings: string[];
   safety: {
+    // These guarantees describe loading the snapshot, not the separate request writer.
     read_only: true;
     no_shell_execution: true;
     no_cli_execution: true;

@@ -33,8 +33,43 @@ const { default: SessionsPage, activeSessionCount, latestArtifactTime } = await 
 const { ArtifactsView, filterArtifacts, latestDatedArtifact, selectedArtifact } = await import("../src/ArtifactsPage.tsx");
 const { MemorySearchForm, MemorySearchView, currentSearchResponse, memoryQueryExamples } = await import("../src/MemorySearch.tsx");
 const { default: App, CommandPage } = await import("../src/App.tsx");
+const { default: ActionRequests, RequestReview } = await import("../src/ActionRequests.tsx");
 Object.assign(globalThis, { window: globalThis, isTauri: false });
 afterEach(() => { clearMocks(); Object.assign(globalThis, { isTauri: false }); });
+
+test("Action Requests renders request-only preparation, pending metadata and an inert preview", () => {
+  Object.assign(globalThis, { isTauri: true });
+  mockIPC(() => assert.fail("Rendering must never prepare or save a request"));
+  const html = renderToStaticMarkup(createElement(ActionRequests, {
+    available: true, projects: sampleProjects, project: sampleProjects[0],
+    recent: [{ id: "123-1", created_at: "2026-09-13T12:00:00Z", action_type: "create_handoff", project_alias: "example", status: "pending" }],
+  }));
+  assert.match(html, /Request-only desktop actions/);
+  assert.match(html, /Prepare Action/);
+  assert.match(html, /Project alias/);
+  assert.match(html, /Goal text/);
+  assert.match(html, /example · pending/);
+  assert.ok(!html.includes("Save Request"));
+  const preview = renderToStaticMarkup(createElement(ActionRequests, { available: false, projects: [] }));
+  assert.match(preview, /fieldset disabled/);
+  assert.match(preview, /Sample projects cannot save/);
+  const request = { id: "123-1", created_at: "2026-09-13T12:00:00Z", action_type: "start_session" as const,
+    payload: { goal: "<script>unsafe()</script>" }, project_alias: "example", status: "pending" as const,
+    preview_title: "Start session request", preview_body: "<script>unsafe()</script>", safety_notice: "Request only." };
+  let saves = 0; let edits = 0;
+  const props = { request, busy: false, onSave() { saves += 1; }, onEdit() { edits += 1; } };
+  const review = renderToStaticMarkup(createElement(RequestReview, props));
+  assert.match(review, /Review Action Request/);
+  assert.match(review, /Save Request/);
+  assert.ok(!review.includes("<script>"));
+  assert.match(review, /&lt;script&gt;/);
+  assert.equal(saves, 0);
+  const buttons = buttonsIn(RequestReview(props));
+  buttons[1].onClick(); assert.equal(edits, 1); assert.equal(saves, 0);
+  buttons[0].onClick(); assert.equal(saves, 1);
+  const busy = renderToStaticMarkup(createElement(RequestReview, { ...props, busy: true }));
+  assert.equal((busy.match(/disabled=""/g) ?? []).length, 2);
+});
 
 function render(page: "Projects" | "Sessions" | "Memory" | "Artifacts", projects = sampleProjects, mode: "live-local" | "static-preview" = "static-preview") {
   return renderToStaticMarkup(createElement(DesktopPages, {

@@ -1,4 +1,4 @@
 [[permission]]
 identifier = "ghost-local-artifacts"
-description = "Read local snapshots, search allowlisted memory, and request validated artifact actions from the main window."
-commands.allow = ["load_ghost_snapshot", "open_ghost_artifact", "reveal_ghost_artifact", "search_ghost_memory"]
+description = "Read local metadata, use validated artifact actions, and prepare/save pending action requests from the main window."
+commands.allow = ["load_ghost_snapshot", "open_ghost_artifact", "reveal_ghost_artifact", "search_ghost_memory", "prepare_ghost_action_request", "save_ghost_action_request"]
