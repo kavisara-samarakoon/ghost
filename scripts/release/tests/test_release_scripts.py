@@ -397,7 +397,7 @@ class ReleaseScriptsTest(unittest.TestCase):
                 "pr",
                 "merge",
                 "12",
-                "--merge",
+                "--squash",
                 "--delete-branch",
                 "--match-head-commit",
                 HEAD,

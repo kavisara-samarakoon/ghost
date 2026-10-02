@@ -150,13 +150,15 @@ successfully; pending, failed, cancelled, skipped, neutral, and unknown outcomes
 are rejected. It never uses an admin bypass or silently enables a checks override.
 
 PR checks now run through [GitHub Actions CI](../.github/workflows/ci.yml) on pull
-requests targeting `main` and pushes to `main`. Expect all four check results:
-`CLI (Python 3.11)`, `CLI (Python 3.14)`, `Release scripts`, and `Repository hygiene`.
-These cover CLI pytest/Ruff, Bash syntax and mocked release-safety tests, whitespace
-across the PR/push diff, and tracked Python bytecode/cache files. CI has read-only
-repository permissions and does not commit, push, merge, or tag.
+requests targeting `main` and pushes to `main`. Expect all six check results:
+`CLI (Python 3.11)`, `CLI (Python 3.14)`, `Desktop frontend build`,
+`Desktop native safety (macOS)`, `Release scripts`, and `Repository hygiene`.
+These cover CLI pytest/Ruff, desktop frontend and native safety validation, Bash
+syntax and mocked release-safety tests, whitespace across the PR/push diff, and
+tracked Python bytecode/cache files. CI has read-only repository permissions and
+does not commit, push, merge, or tag.
 
-**Wait for all four checks to complete successfully and review the PR before typing
+**Wait for all six checks to complete successfully and review the PR before typing
 the merge/tag confirmation.** No reported checks, or any reported pending, skipped,
 or failing check, still block the helper; local tests do not bypass CI. The helper
 does not enforce a fixed list of check names. If checks have not appeared yet,
@@ -172,14 +174,15 @@ merge PR #12 and tag v0.1.0-example-milestone
 ```
 
 The script rechecks cleanliness, tag absence, PR identity, and checks after the
-prompt. It merges with a merge commit, pins the reviewed PR head, and requests
+prompt. It squash-merges the reviewed PR, pins the reviewed PR head, and requests
 deletion of the milestone branch. It confirms the PR actually merged, rather than
 merely entering a merge queue, then switches to main and pulls without merging.
 
-After rechecking tag absence, it creates an annotated tag on the PR's exact merge
-commit, verifies that commit is on main, and pushes the fully qualified tag ref.
-This avoids accidentally tagging a later unrelated commit or pushing a same-named
-branch. It fetches/prunes and prints final status, branches, and recent history.
+After rechecking tag absence, it creates an annotated tag on the verified squash
+merge commit returned by GitHub through `mergeCommit.oid`, verifies that commit is
+on main, and pushes the fully qualified tag ref. This avoids accidentally tagging
+the original PR head, a later unrelated commit, or pushing a same-named branch. It
+fetches/prunes and prints final status, branches, and recent history.
 
 ## Safety and partial completion
 
