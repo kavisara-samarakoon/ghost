@@ -2,7 +2,7 @@
 
 These are manually invoked repository maintenance scripts, separate from the GHOST
 CLI. They do not give GHOST terminal execution or GitHub automation capabilities.
-The active application remains `apps/cli`; the desktop is future UI.
+The active applications are the CLI in `apps/cli` and desktop companion in `apps/desktop`.
 
 ## Prerequisites
 
@@ -51,7 +51,7 @@ Use Codex/Astra or manual edits for the focused milestone. Keep CLI implementati
 in `apps/cli`, and leave `apps/desktop` unchanged unless explicitly requested.
 
 The CLI uses Python/pip and `pyproject.toml`, not a root JavaScript package manager.
-The future desktop has its own pnpm lockfile. The helpers do not choose validation
+The desktop companion has its own pnpm lockfile. The helpers do not choose validation
 commands automatically. For a CLI milestone, from the repository root:
 
 ```sh

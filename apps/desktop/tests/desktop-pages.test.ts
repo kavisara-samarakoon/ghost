@@ -408,6 +408,15 @@ test("Command, Projects, Sessions, Memory, and Artifacts all render after cockpi
   }
 });
 
+test("global safety strip describes pending drafts without claiming no file writes", () => {
+  mockIPC(() => assert.fail("Rendering the safety strip must not invoke native commands"));
+  const html = renderToStaticMarkup(createElement(App));
+  assert.match(html, /No shell\/CLI execution · Pending request drafts only · No workflow mutation/);
+  assert.doesNotMatch(html, /No file writes/i);
+  // Guard both the live and preview wording, even though server rendering starts in preview.
+  assert.doesNotMatch(readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8"), /No file writes/i);
+});
+
 test("Sessions navigation requests existing pages while retaining selection and avoiding IPC", () => {
   Object.assign(globalThis, { isTauri: true });
   mockIPC(() => assert.fail("Session navigation must never invoke or search memory"));
