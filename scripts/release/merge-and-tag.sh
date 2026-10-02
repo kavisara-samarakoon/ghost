@@ -64,7 +64,7 @@ read_open_pr
 [[ "$head_oid" == "$reviewed_head" ]] || error "PR head changed during confirmation. Review again."
 require_passing_checks
 info "Merging PR #$pr and deleting its milestone branch."
-gh pr merge "$pr" --merge --delete-branch --match-head-commit "$reviewed_head"
+gh pr merge "$pr" --squash --delete-branch --match-head-commit "$reviewed_head"
 
 # A merge queue may accept the command without actually merging yet. Never tag it.
 merged=$(gh pr view "$pr" --json state,mergeCommit --jq '[.state, (.mergeCommit.oid // "")] | @tsv')
