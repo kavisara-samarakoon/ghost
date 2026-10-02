@@ -1,10 +1,11 @@
 # GHOST Desktop — Command Space
 
-GHOST v0.3.0-alpha is a local macOS workflow cockpit for reviewing projects,
-active sessions, memory, and artifacts through a read-only snapshot. Native actions
-include click-only Open/Reveal for approved generated artifacts. M29 adds local
-pending action requests for the v0.4.0-alpha direction; the package version is unchanged.
-See the [release checkpoint](../../docs/release-v0.3.0-alpha.md) for scope and versions.
+GHOST v0.4.0-alpha is the Safe Desktop Action Requests checkpoint: a local macOS
+workflow cockpit for reviewing projects, active sessions, memory, and artifacts
+through a read-only snapshot. Native actions
+include click-only Open/Reveal for approved generated artifacts and M29's local
+pending action requests.
+See the [release checkpoint](../../docs/release-v0.4.0-alpha.md) for scope and versions.
 
 From `apps/desktop`:
 
@@ -43,8 +44,10 @@ mode cannot save. Editing a reviewed request requires a fresh preview.
 Rust validates the action, fields, provider, and reviewed preview before saving
 `GHOST_HOME/action-requests/<UTC-timestamp>-<safe-id>.json` (default `~/.ghost`).
 Each file has `pending` status and a safety notice. These are local pending drafts:
-they do not execute CLI commands or mutate sessions, notes, outputs, or next-step
-drafts. The user must review and manually run/approve real CLI workflow changes.
+they do not execute CLI commands or mutate sessions, notes, outputs, next-step
+drafts, handoffs, or other workflow records. The desktop does not automatically
+publish, merge, deploy, tag, or release. The user must review and manually
+run/approve real CLI workflow changes.
 No request consumer or automatic execution is included.
 
 The only writes are the request file and `desktop-action-audit.jsonl`, plus their

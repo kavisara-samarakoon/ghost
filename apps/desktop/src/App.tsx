@@ -347,7 +347,7 @@ function App() {
       {/* ---- Safety strip ---- */}
       <div className="status-strip">
         <span className="status-strip-text">
-          {live ? "Local metadata only \u00b7 No commands \u00b7 No file writes" : "Local-first \u00b7 Secure \u00b7 Private \u00b7 No commands \u00b7 No file writes"}
+          {`${live ? "Local" : "Static preview"} · No shell/CLI execution · Pending request drafts only · No workflow mutation`}
         </span>
       </div>
     </div>

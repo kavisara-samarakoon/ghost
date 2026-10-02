@@ -5,8 +5,8 @@
 GHOST means GitHub, Handoff, Operations, Search, and Tracking.
 
 GHOST is a local-first personal AI workflow coordinator for Kavisara Samarakoon.
-The active MVP is the Python CLI/workflow engine in `apps/cli`.
-The premium macOS desktop app in `apps/desktop` is future UI only.
+The active Python CLI/workflow engine is in `apps/cli`.
+The active Tauri/React macOS desktop companion is in `apps/desktop`.
 
 Tagline:
 
@@ -17,32 +17,26 @@ GHOST coordinates personal software, cybersecurity, networking, Codex handoff, v
 ## Current Stack
 
 - Active CLI: Python 3.11+, Typer, Rich, Pydantic, PyYAML
-- Validation: pytest and ruff
+- CLI validation: pytest and ruff
 - Storage: local YAML records, Markdown context, and JSONL audit logs
-- Future desktop UI: Tauri, React, TypeScript, CSS, pnpm
+- Active desktop companion: Tauri, React, TypeScript, CSS, pnpm
+- Desktop validation: frontend build/tests and Rust tests/checks
 
-Main app path: `apps/cli`
+Application paths: `apps/cli` and `apps/desktop`
 
-## Astra Sprint Context
-
-The owner has short-term access to a strong Codex/Astra coding model before
-ChatGPT Plus may expire around September 14, 2026. Use this sprint for serious
-milestone implementation, architecture, meaningful tests, and maintainability.
-Do not spend this opportunity on tiny cosmetic edits.
-
-## CLI-first Development Rules
+## Development Rules
 
 - Every new task must inspect `git status --short` before other repository work.
 - If uncommitted changes exist, especially outside `apps/cli`, stop and report
   them unless the owner explicitly authorizes continuing. Never overwrite them.
 - Read this file before implementation.
-- `apps/cli` is the active MVP area.
-- Do not modify `apps/desktop` during CLI Milestone 1 unless explicitly requested.
-- Keep the CLI storage and workflow modules independent of the future UI.
+- Keep changes within the requested CLI or desktop scope.
+- Keep CLI storage and workflow modules independent of the desktop UI.
+- Keep desktop native safety checks separate from CLI workflow mutations.
 
 ## Product Direction
 
-The future desktop UI must feel like:
+The desktop UI must feel like:
 
 - a real macOS desktop app
 - minimal
@@ -89,18 +83,26 @@ Use the approved logo only as a brand asset.
 
 Until the real logo asset is added, use a simple temporary text or letter mark only.
 
-## Current MVP Scope
+## Current Application Boundaries
 
-GHOST CLI Milestone 1: Local Foundation includes:
-
-- `ghost init`
-- `ghost project add`, `ghost project list`, and `ghost project show`
+- The CLI manages local projects, sessions, context packs, handoff drafts,
+  supplied outputs, next-step drafts, update packs, doctor reports, and demos.
 - Global config, project registry, and audit log under `GHOST_HOME` or `~/.ghost`
 - Per-project `.ghost/` context, sessions, drafts, milestones, and audit log
 - Pydantic models, UTC ISO timestamps, and sensitive audit metadata redaction
-- Draft-first assumptions; dangerous-action confirmation comes later
-- No AI API calls, voice, cloud features, GitHub automation, database logic,
-  or terminal command execution features
+- Draft creation is not execution or publication approval.
+- Desktop snapshot/search remain read-only; Open/Reveal remain allowlisted,
+  click-only actions for approved generated artifacts.
+- Desktop Action Requests use Prepare Action -> Review Action Request -> explicit
+  Save Request. Saved requests are pending local drafts only.
+- The narrow desktop write path creates pending action-request JSON,
+  `desktop-action-audit.jsonl`, and their storage directories when needed.
+- No request consumer or executor exists. Saving requests does not mutate sessions,
+  notes, outputs, next-step drafts, handoffs, or other workflow records.
+- Pending requests are untrusted drafts; any future consumer must require fresh
+  human confirmation before a workflow change.
+- The desktop performs no shell/CLI execution, AI/network calls, or automatic
+  GitHub mutation, publishing, merging, deployment, tagging, or release.
 
 ## Coding Rules
 
@@ -132,8 +134,9 @@ python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -e ".[dev]"
-pytest
-ruff check .
+.venv/bin/python -m pytest
+.venv/bin/ruff check .
+.venv/bin/ghost version
 ghost --help
 ghost project --help
 ```
@@ -145,5 +148,23 @@ apps/cli/.venv/bin/ghost --help
 apps/cli/.venv/bin/ghost project --help
 ```
 
-Report validation results and confirm `apps/desktop` was not modified.
+From `apps/desktop`:
+
+```sh
+pnpm build
+pnpm test
+cd src-tauri
+cargo test --locked
+cargo check --locked
+```
+
+For release workflow changes, from the repository root:
+
+```sh
+python3 -m unittest discover -s scripts/release/tests -v
+git diff --check
+```
+
+Run validation appropriate to the authorized scope and report results for both
+applications when both are changed. Confirm which application areas were modified.
 Do not commit or push unless explicitly requested.
