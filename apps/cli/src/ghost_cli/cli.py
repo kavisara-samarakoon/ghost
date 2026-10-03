@@ -11,6 +11,7 @@ from rich.table import Table
 from rich.text import Text
 
 from ghost_cli import __version__
+from ghost_cli.action_requests import MAX_REQUEST_ENTRIES, find_action_request, scan_action_requests
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
 from ghost_cli.demo import create_nexora_demo, render_demo_report
@@ -50,6 +51,11 @@ demo_app = typer.Typer(
     help="Create isolated, temporary sample workflows for manual review.", no_args_is_help=True
 )
 app.add_typer(demo_app, name="demo")
+request_app = typer.Typer(
+    help="Review pending desktop Action Request drafts without performing workflow actions.",
+    no_args_is_help=True,
+)
+app.add_typer(request_app, name="request")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
@@ -66,6 +72,75 @@ def command_errors() -> Iterator[None]:
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+@contextmanager
+def request_review() -> Iterator[None]:
+    """Keep the review-only boundary visible on success and storage/validation errors."""
+    try:
+        with command_errors():
+            yield
+    finally:
+        console.print("Review only. No workflow action was performed.")
+
+
+@request_app.command("list")
+def request_list(
+    limit: Annotated[
+        int,
+        typer.Option(
+            "--limit", min=1, max=MAX_REQUEST_ENTRIES,
+            help="Maximum pending drafts to display, newest first.",
+        ),
+    ] = 20,
+) -> None:
+    """List valid pending requests; skip unsafe entries without displaying their contents."""
+    with request_review():
+        result = scan_action_requests(limit=limit)
+        if not result.requests:
+            console.print("No valid pending Action Requests found.")
+        else:
+            table = Table(title="Pending GHOST Action Requests")
+            for heading in (
+                "Request ID", "Created (UTC)", "Project alias", "Action type", "Status",
+            ):
+                table.add_column(heading, overflow="fold")
+            for request in result.requests:
+                table.add_row(
+                    Text(request.id), Text(request.created_at), Text(request.project_alias),
+                    Text(request.action_type), Text(request.status),
+                )
+            console.print(table)
+        console.print(
+            f"Skipped unsafe or invalid entries: {result.skipped}.",
+            style="yellow" if result.skipped else None,
+        )
+
+
+@request_app.command("show")
+def request_show(
+    request_id: Annotated[str, typer.Argument(help="Exact pending desktop Action Request ID.")],
+) -> None:
+    """Show one validated pending draft and its reviewed preview without changing storage."""
+    with request_review():
+        request = find_action_request(request_id)
+        table = Table(title="GHOST Action Request", show_header=False)
+        table.add_column("Field", style="cyan")
+        table.add_column("Value", overflow="fold")
+        for label, value in (
+            ("Request ID", request.id),
+            ("Created (UTC)", request.created_at),
+            ("Project alias", request.project_alias),
+            ("Action", request.action_type),
+            ("Status", request.status),
+        ):
+            table.add_row(label, Text(value))
+        console.print(table)
+        console.print("Reviewed preview", style="bold")
+        console.print(Text(request.preview_title), soft_wrap=True)
+        console.print(Text(request.preview_body), soft_wrap=True)
+        console.print("Safety notice", style="bold")
+        console.print(Text(request.safety_notice), soft_wrap=True)
 
 
 @app.command("version")
