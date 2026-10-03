@@ -485,7 +485,7 @@ def test_scan_rejects_unsafe_ghost_home_override(
     [
         (["--help"], "request"),
         (["request", "--help"], "show"),
-        (["request", "list", "--help"], "--limit"),
+        (["request", "list", "--help"], "Maximum pending drafts to display"),
         (["request", "show", "--help"], "request_id"),
     ],
 )
@@ -551,10 +551,14 @@ def test_request_list_fields_order_and_limits(runner: CliRunner, isolated_home: 
 @pytest.mark.parametrize("limit", ["0", "-1", "513"])
 def test_request_cli_limit_validation(
     limit: str, runner: CliRunner, isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Invalid limits must not access storage")
+
+    monkeypatch.setattr("ghost_cli.cli.scan_action_requests", forbidden)
     result = runner.invoke(app, ["request", "list", "--limit", limit])
-    assert result.exit_code == 2
-    assert "--limit" in result.output
+    assert result.exit_code == 2, result.output
     assert not isolated_home.exists()
 
 
