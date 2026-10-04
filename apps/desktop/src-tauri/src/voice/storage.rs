@@ -151,6 +151,21 @@ impl AuditStore {
     ) -> Result<(), &'static str> {
         let _guard = AUDIT_LOCK.lock().map_err(|_| ERROR)?;
         self.verify()?;
+        // Check existing mode before a writable open: some systems clear special mode bits
+        // on open, which must not disguise an unsafe pre-existing entry as a private file.
+        match statat(self.home(), AUDIT, AtFlags::SYMLINK_NOFOLLOW) {
+            Ok(entry) => {
+                if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
+                    || entry.st_nlink != 1
+                    || entry.st_uid != rustix::process::geteuid().as_raw()
+                    || entry.st_mode & 0o7777 != 0o600
+                {
+                    return Err(ERROR);
+                }
+            }
+            Err(rustix::io::Errno::NOENT) => (),
+            Err(_) => return Err(ERROR),
+        }
         let mut file = File::from(
             openat(
                 self.home(),

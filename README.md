@@ -8,46 +8,37 @@
 
 ## Overview
 
-GHOST is a local-first workflow assistant that combines a Python CLI workflow
-engine with a companion macOS desktop cockpit. The CLI is the controlled write
-path for creating projects, sessions, notes, outputs, context packs, handoffs,
-and update packs. The desktop app provides safe review, search, and navigation
-over approved local GHOST data without performing workflow writes.
+GHOST is a local-first personal AI workflow coordinator with a Python CLI and a
+macOS desktop companion. The CLI manages local workflow records. The desktop
+reviews approved local data and can save pending Action Requests and inert intent
+plan drafts. Neither desktop path executes a workflow.
 
-GHOST stores workflow records locally and keeps generated material draft-first.
-The desktop app does not execute the CLI, shell commands, AI calls, or release
-operations.
+Current unreleased capabilities through M36 include exact-confirmed CLI request
+execution (M32), advisory OpenAI review (M33), exact-SHA-confirmed finite local
+orchestration (M34), reviewed voice transcription (M35), and proposal-only intent
+interpretation (M36). AI never owns execution authority. The desktop never invokes
+the CLI, shell, Git/GitHub, or release operations.
 
 ## Release status
 
-The current prerelease is **v0.3.0-alpha — Local MVP Desktop Checkpoint**. It is
-an alpha build for local dogfooding and is not production-ready. The available
-macOS DMG targets Apple Silicon (`aarch64`) only. The app and DMG are unsigned
-and not notarized by Apple.
+The published/version baseline is **v0.4.0-alpha — Safe Desktop Action Requests**
+(desktop `0.4.0-alpha`, CLI `0.4.0a0`). Its
+[release notes](docs/release-v0.4.0-alpha.md) describe that historical checkpoint,
+not the subsequent unreleased M31–M36 capabilities. The image above is historical
+v0.3.0-alpha artwork. M37 does not select a new version or publish a release.
 
-See the [v0.3.0-alpha release notes](docs/release-v0.3.0-alpha.md) for the exact
-scope, known limitations, and verification details.
+This remains an alpha project. Apple Developer signing, notarization, live-provider
+verification, and operational review are separate release prerequisites; local
+validation alone does not establish production readiness.
 
 ## Download and install GHOST desktop
 
-1. Go to [GitHub Releases](https://github.com/kavisara-samarakoon/ghost/releases).
-2. Download `GHOST_0.3.0-alpha_aarch64.dmg`.
-3. In Terminal, verify the downloaded file:
-
-   ```sh
-   shasum -a 256 GHOST_0.3.0-alpha_aarch64.dmg
-   ```
-
-   Expected SHA256:
-
-   ```text
-   3ae94ed728819d0d5e1c96da6aa309365692624352a2e27f0227ae546083b783
-   ```
-
-4. Open the DMG and drag `GHOST.app` to `/Applications`.
-5. On first open, macOS Gatekeeper may block the app because this alpha is
-   unsigned and not notarized. Control-click or right-click `GHOST.app`, choose
-   **Open**, then confirm **Open**.
+Use [GitHub Releases](https://github.com/kavisara-samarakoon/ghost/releases) for
+published assets and their release-specific checksum and installation instructions.
+Compare the downloaded DMG's `shasum -a 256` result with that release's checksum;
+local M37 bundles are validation artifacts, not published assets. The current
+baseline targets Apple Silicon. Unsigned/not-notarized builds have macOS
+Gatekeeper limitations; no GHOST setting bypasses macOS security.
 
 ## CLI setup from source
 
@@ -84,8 +75,8 @@ project details:
 
 Use the CLI to create or update workflow records, then open the desktop app to
 review the resulting projects, sessions, memory, and artifacts. Return to the
-CLI whenever a workflow write is needed. The desktop reads approved local GHOST
-data but does not invoke the CLI or modify workflow records.
+CLI for workflow execution. Desktop saves are inert drafts; desktop voice and
+intent each require a separate explicit Send and never execute workflow actions.
 
 `GHOST_HOME` selects the global storage directory; without it, GHOST uses
 `~/.ghost`. Each registered project gets its own `<project-root>/.ghost/`
@@ -95,7 +86,8 @@ automatically added to Git's ignore rules; review their contents before staging.
 
 ## Desktop page overview
 
-- **Command:** Workflow cockpit showing the current project and workflow status.
+- **Command:** Project/workflow review, pending Action Requests, controlled voice
+  capture, and proposal-only intent interpretation.
 - **Projects:** Review and select registered local workspaces.
 - **Sessions:** Review active session goals, notes, and status.
 - **Memory:** Search approved local GHOST memory locations after explicit submit.
@@ -117,6 +109,9 @@ automatically added to Git's ignore rules; review their contents before staging.
 | `ghost update-pack --project <alias>` | Prepare six review-only update drafts |
 | `ghost doctor [--project <alias>]` | Check storage without modifying it |
 | `ghost demo nexora` | Run a complete isolated sample workflow |
+| `ghost request list/show/apply` | Review pending requests; apply requires fresh exact `APPLY <id>` |
+| `ghost orchestrate preview/run/list/show` | Review finite local plans; run requires fresh full SHA confirmation |
+| `ghost ai review <alias>` | Preview sanitized allowlisted context and confirm one advisory OpenAI review |
 
 Slash-separated names are alternative subcommands. Use `ghost <command> --help`
 for arguments and options.
@@ -231,10 +226,11 @@ repeatability, and failure handling.
 ## Safety boundaries and limitations
 
 - The desktop does not run shell commands or execute the GHOST CLI.
-- The desktop does not call AI APIs or network services.
+- Desktop network access is limited to two separately confirmed native OpenAI
+  paths: voice transcription and intent interpretation; React cannot connect to OpenAI.
 - The desktop does not publish, deploy, merge, or release automatically.
-- Desktop workflow write actions are not implemented yet; the CLI remains the
-  controlled write path.
+- Desktop writes pending Action Requests, optional inert intent plans, and
+  content-free audits. CLI M32/M34 alone perform their confirmed local actions.
 - Desktop refresh may require reopening the app.
 - Desktop search is limited to approved local GHOST memory locations and requires
   explicit submit.
@@ -243,8 +239,9 @@ repeatability, and failure handling.
 - Do not store secrets in GHOST notes or outputs. Free-form text is not a complete
   secret scanner, and workflow content remains plaintext in local storage.
 
-The CLI only writes local GHOST context files. It does not read `.env` files,
-call AI APIs, execute terminal commands, automate GitHub, or use cloud services.
+The CLI manages local workflow records and has one explicitly confirmed OpenAI
+Responses review path. It does not read `.env` files, execute terminal commands,
+or automate Git/GitHub. Handoffs remain offline local drafts.
 Workflows are draft-first: creating a draft or workspace never approves an action.
 Audit metadata redacts sensitive keys, including nested values. Session audit
 events omit goal and note contents, but those contents remain plaintext in the
@@ -286,7 +283,7 @@ refuses to proceed without successful CI checks.
 
 [GitHub Actions CI](.github/workflows/ci.yml) checks pull requests targeting `main`
 and pushes to `main`: CLI tests/lint on Python 3.11 and 3.14, release-helper syntax
-and safety tests, desktop frontend build/tests, native macOS Rust tests/checks,
+and safety tests, desktop frontend build/tests, native macOS Rust formatting/tests/checks,
 and repository whitespace/cache/build-artifact hygiene. CI is validation
 only; human review and the [release workflow](docs/release-workflow.md) confirmations
 remain required before merge/tag.

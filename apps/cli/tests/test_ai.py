@@ -1537,3 +1537,57 @@ def test_audit_private_permissions_remain_required(phase, mode, workspace, runne
     assert result.exit_code == 1
     assert len(transport.requests) == (0 if phase == "confirmed" else 1)
     assert len(drafts(workspace)) == (0 if phase == "confirmed" else 1)
+
+
+@pytest.mark.parametrize("kind", ["oversized-audit", "unsafe-audit-mode"])
+def test_confirmed_ai_audit_rejects_size_and_preopen_unsafe_mode(
+    kind, workspace, isolated_home, runner, transport,
+):
+    path = workspace / "audit.jsonl"
+    if kind == "oversized-audit":
+        with path.open("r+b") as stream:
+            stream.truncate(ai.MAX_AUDIT_BYTES)
+    else:
+        path.chmod(0o640)
+    result = invoke(runner)
+    assert result.exit_code == 1
+    assert "Confirmation audit failed" in result.output
+    assert not transport.requests
+    assert not drafts(workspace)
+    if kind == "unsafe-audit-mode":
+        assert stat.S_IMODE(path.stat().st_mode) == 0o640
+
+
+@pytest.mark.parametrize("change", ["draft-file", "draft-directory", "workspace", "permissions"])
+def test_ai_saved_draft_identity_is_verified_after_file_fsync(
+    change, workspace, isolated_home, runner, transport, monkeypatch, tmp_path,
+):
+    original = os.fsync
+    changed = False
+
+    def tamper(fd):
+        nonlocal changed
+        original(fd)
+        if not changed and stat.S_ISREG(os.fstat(fd).st_mode):
+            candidates = list((workspace / "drafts/ai/openai").glob("*.md"))
+            if candidates:
+                changed = True
+                if change == "draft-file":
+                    candidates[0].unlink()
+                    candidates[0].write_text("replacement must survive")
+                elif change == "permissions":
+                    candidates[0].chmod(0o644)
+                else:
+                    target = workspace if change == "workspace" else candidates[0].parent
+                    target.rename(tmp_path / "old-storage")
+                    target.mkdir()
+    monkeypatch.setattr(os, "fsync", tamper)
+    result = invoke(runner)
+    assert changed
+    assert result.exit_code == 1
+    assert "local persistence failed" in result.output
+    assert "did not retry automatically" in result.output
+    assert len(transport.requests) == 1
+    if change == "draft-file":
+        replacement = list((workspace / "drafts/ai/openai").glob("*.md"))[0]
+        assert replacement.read_text() == "replacement must survive"

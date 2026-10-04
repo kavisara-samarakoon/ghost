@@ -1,8 +1,8 @@
 [package]
 name = "desktop"
 version = "0.4.0-alpha"
-description = "A Tauri App"
-authors = ["you"]
+description = "GHOST secure personal AI workflow coordinator"
+authors = ["Kavisara Samarakoon"]
 edition = "2021"
 
 # See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html

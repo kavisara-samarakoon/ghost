@@ -133,6 +133,16 @@ pub fn prepare(project_alias: String, action: Action) -> Result<ActionRequest, &
     })
 }
 
+fn canonical_timestamp(value: &str) -> bool {
+    use chrono::Datelike;
+    chrono::DateTime::parse_from_rfc3339(value).is_ok_and(|date| {
+        (1..=9999).contains(&date.year())
+            && date.timestamp_subsec_nanos() < 1_000_000_000
+            && value.len() == 30
+            && date.to_rfc3339_opts(chrono::SecondsFormat::Nanos, true) == value
+    })
+}
+
 impl ActionRequest {
     fn validate(&self) -> Result<(), &'static str> {
         let expected = prepare(self.project_alias.clone(), self.action.clone())?;
@@ -143,8 +153,7 @@ impl ActionRequest {
             || self.id.is_empty()
             || self.id.len() > 64
             || !self.id.bytes().all(|c| c.is_ascii_digit() || c == b'-')
-            || chrono::DateTime::parse_from_rfc3339(&self.created_at).is_err()
-            || !self.created_at.ends_with('Z')
+            || !canonical_timestamp(&self.created_at)
         {
             return Err("Request changed or is invalid. Prepare and review it again.");
         }

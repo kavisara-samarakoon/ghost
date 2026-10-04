@@ -1554,3 +1554,58 @@ def test_secret_looking_alias_is_redacted_in_request_execution_audit(
     assert "sk-abcdefgh12345" not in audit
     assert "[REDACTED]" in audit
     assert workflow_spies["create_next_summary"].call_count == 1
+
+
+@pytest.mark.parametrize("fixture_path", sorted(
+    (Path(__file__).resolve().parents[3] / "contracts/action-request-v1").glob("*.json")
+), ids=lambda path: path.stem)
+def test_shared_contract_desktop_request_cli_review_and_confirmed_dispatch(
+    fixture_path: Path, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    value = parse_action_request(fixture_path.read_bytes())
+    isolated_home.mkdir(mode=0o700)
+    directory = isolated_home / "action-requests"
+    directory.mkdir(mode=0o700)
+    path = directory / value.expected_filename()
+    path.write_bytes(fixture_path.read_bytes())
+    path.chmod(0o600)
+    assert find_action_request(value.id, home=isolated_home) == value
+    with request_execution.review_action_request(value.id, isolated_home) as review:
+        assert review.request == value
+        request_execution.apply_reviewed_request(review, f"APPLY {value.id}")
+    name = {"start_session": "start_session", "add_session_note": "add_note",
+            "generate_next_steps": "create_next_summary", "create_handoff": "create_handoff"}[
+                value.action_type]
+    assert workflow_spies[name].call_count == 1
+    assert sum(spy.call_count for spy in workflow_spies.values()) == 1
+    assert workflow_spies[name].call_args.kwargs == {"home": isolated_home}
+
+
+@pytest.mark.parametrize("change", ["registry", "project", "workspace", "metadata", "new-alias"])
+def test_apply_pins_reviewed_project_before_claim_and_dispatch(
+    change: str, tmp_path: Path, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    initialize_home(isolated_home)
+    root = tmp_path / "project"
+    root.mkdir()
+    project = add_project("example", root, home=isolated_home)
+    write_apply_request(isolated_home)
+    if change == "new-alias":
+        (isolated_home / "projects.yaml").write_text("version: 1\nprojects: []\n")
+    with request_execution.review_action_request(REQUEST_ID, isolated_home) as review:
+        if change in {"registry", "new-alias"}:
+            import yaml
+            data = {"version": 1, "projects": [project.model_dump(mode="json")]}
+            if change == "registry":
+                data["projects"][0]["name"] = "Changed project identity"
+            (isolated_home / "projects.yaml").write_text(yaml.safe_dump(data))
+        elif change == "metadata":
+            (root / ".ghost/project.yaml").write_text("alias: other\npath: /unreviewed\n")
+        else:
+            target = root if change == "project" else root / ".ghost"
+            target.rename(tmp_path / "old-identity")
+            target.mkdir()
+        with pytest.raises(GhostError):
+            request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+    assert_no_dispatch(workflow_spies)
+    assert not (isolated_home / request_execution.CLAIMS).exists()

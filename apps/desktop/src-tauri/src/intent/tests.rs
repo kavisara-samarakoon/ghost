@@ -1258,3 +1258,63 @@ mod persistence {
         }
     }
 }
+
+#[test]
+fn shared_contract_plans_are_exact_native_validated_saved_bytes() {
+    let contract = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../contracts/orchestration-plan-v1");
+    let root = tempfile::tempdir().unwrap();
+    let home = root.path().canonicalize().unwrap().join("ghost-home");
+    let store = storage::IntentStore::open(&home).unwrap();
+    let mut count = 0;
+    for entry in std::fs::read_dir(contract).unwrap() {
+        let expected = std::fs::read(entry.unwrap().path()).unwrap();
+        let value: Value = serde_json::from_slice(&expected).unwrap();
+        let proposal = proposed(
+            json!({"kind":"plan","summary":"Proposed local work.","steps":value["steps"]}),
+        )
+        .unwrap();
+        let result = IntentResult {
+            proposal_sha256: proposal_hash(&proposal, "example", &review().request_sha256).unwrap(),
+            proposal,
+            project_alias: "example".into(),
+            model: MODEL.into(),
+            request_sha256: review().request_sha256,
+            audit_recorded: true,
+        };
+        let bytes = validate_save("main", &result, Some(true)).unwrap();
+        let saved = save_with(
+            &result,
+            &bytes,
+            |bytes| store.save_plan(bytes),
+            |event| store.append(event),
+        )
+        .unwrap();
+        assert_eq!(std::fs::read(saved.path).unwrap(), expected);
+        assert_eq!(saved.plan_sha256, hash(&expected));
+        count += 1;
+    }
+    assert_eq!(count, 4);
+}
+
+#[test]
+fn credential_looking_project_bindings_never_enter_prepare_send_save_or_audit() {
+    let alias = "sk-syntheticcredentialonly";
+    assert!(prepare("main", alias.into(), "Review local work.".into()).is_err());
+    let mut changed = review();
+    changed.project_alias = alias.into();
+    assert!(interpret_with(
+        "main",
+        changed,
+        Some(true),
+        |_| panic!("No audit"),
+        || panic!("No credential"),
+        |_, _| panic!("No transport")
+    )
+    .is_err());
+    let mut proposed = result();
+    proposed.project_alias = alias.into();
+    proposed.proposal_sha256 =
+        proposal_hash(&proposed.proposal, alias, &proposed.request_sha256).unwrap();
+    assert!(validate_save("main", &proposed, Some(true)).is_err());
+}

@@ -1,0 +1,1 @@
+{"version":1,"steps":[{"action":"start_session","goal":"Review the recorded project state."},{"action":"add_session_note","note":"Owner reviewed the local plan."},{"action":"generate_next_steps"},{"action":"create_handoff","provider":"gemini"}]}

@@ -148,6 +148,7 @@ fn main_window(window: &str) -> Result<(), &'static str> {
 fn alias(value: &str) -> Result<(), &'static str> {
     if value.is_empty()
         || value.len() > 128
+        || crate::snapshot::text::redact(value) != value
         || !value
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')

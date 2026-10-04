@@ -1605,3 +1605,21 @@ def test_run_without_confirmation_has_no_native_move_or_claim(workspace, plan_fi
     monkeypatch.setattr(orch, "_exclusive_rename", forbidden)
     with pytest.raises(GhostError, match="No workflow action"):
         orch.run_plan(prepared, prepared.confirmation[:20])
+
+
+@pytest.mark.parametrize("fixture_path", sorted(
+    (Path(__file__).resolve().parents[3] / "contracts/orchestration-plan-v1").glob("*.json")
+), ids=lambda path: path.stem)
+def test_shared_contract_m36_saved_plan_m34_parser_preview_and_frozen_steps(
+    fixture_path: Path, workspace: Path, isolated_home: Path, runner,
+) -> None:
+    raw = fixture_path.read_bytes()
+    parsed = orch.parse_plan(raw)
+    assert parsed.version == 1
+    assert [step.action for step in parsed.steps] == [step["action"] for step in STEPS]
+    prepared = orch.prepare_plan("example", fixture_path)
+    assert prepared.plan == parsed
+    result = runner.invoke(app, ["orchestrate", "preview", "example", "--plan", str(fixture_path)])
+    assert result.exit_code == 0, result.output
+    assert prepared.fingerprint in result.output
+    assert prepared.fingerprint != hashlib.sha256(raw).hexdigest()
