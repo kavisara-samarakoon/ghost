@@ -29,20 +29,32 @@ pr_url=$(gh pr create --base main --head "$branch" --title "$title" --body "$bod
 pass "PR created: $pr_url"
 info "Human review and a separate merge decision are still required. This script never merges."
 
-count=$(gh pr view "$pr_url" --json statusCheckRollup --jq '.statusCheckRollup | length') ||
-    error "Could not inspect checks. Review $pr_url manually."
-[[ "$count" =~ ^[0-9]+$ ]] || error "Unexpected check information. Review $pr_url manually."
-if [[ "$count" -eq 0 ]]; then
-    info "No checks are reported. CI may be unconfigured or not started yet; checks have NOT passed."
-    info "Configure CI or wait for it to start, then run gh pr checks '$pr_url' --watch."
-else
-    checks_help=$(gh pr checks --help) || error "Cannot inspect gh check support. Review $pr_url manually."
-    if [[ "$checks_help" == *--watch* ]]; then
-        info "Watching PR checks."
-        gh pr checks "$pr_url" --watch || error "Checks did not pass or watching failed. Review $pr_url."
-        pass "Check watching completed. Review the results and PR before merging."
-    else
-        info "This gh version cannot watch checks; upgrade gh or inspect $pr_url manually. No pass is claimed."
-    fi
-fi
+wait_for_checks() {
+    # Fixed startup budget: one immediate poll plus 24 waits of five seconds.
+    # API failures are errors, not evidence that CI has not started yet.
+    local attempt count max_attempts=25 poll_interval=5
+    for ((attempt=1; attempt<=max_attempts; attempt++)); do
+        count=$(gh pr view "$pr_url" --json statusCheckRollup --jq '.statusCheckRollup | length') ||
+            error "Could not inspect checks. Review $pr_url manually."
+        [[ "$count" =~ ^(0|[1-9][0-9]*)$ ]] || error "Unexpected check information. Review $pr_url manually."
+        if [[ "$count" != 0 ]]; then
+            info "$count CI checks reported for $pr_url."
+            return
+        fi
+        [[ "$attempt" -lt "$max_attempts" ]] ||
+            error "CI checks never appeared after $max_attempts polls (120 seconds of waiting). Review $pr_url manually."
+        info "Waiting for CI checks to appear ($attempt/$max_attempts). Retrying in $poll_interval seconds."
+        sleep "$poll_interval" || error "Waiting for CI failed. Review $pr_url manually."
+    done
+}
+
+wait_for_checks
+checks_help=$(gh pr checks --help) || error "Cannot inspect gh check support. Review $pr_url manually."
+[[ "$checks_help" == *--watch* ]] || error "This gh version cannot watch checks; upgrade gh. Review $pr_url manually."
+info "Watching PR checks: $pr_url"
+gh pr checks "$pr_url" --watch || error "Checks did not pass or watching failed. Review $pr_url."
+# Watching can return zero for skipped checks. Require actual successful states,
+# using the same strict gate as both merge scripts, without changing their logic.
+(pr=$pr_url; require_passing_checks) || error "Checks did not all complete successfully. Review $pr_url."
+pass "Check watching completed with successful CI. Review the results and PR before merging."
 info "PR: $pr_url — next: human review, then merge-and-tag only with successful CI."

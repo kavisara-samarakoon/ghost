@@ -36,21 +36,6 @@ read_open_pr() {
     info "$pr_url"
 }
 
-require_passing_checks() {
-    local checks bucket state seen=false
-    gh pr checks "$pr" || error "CI must exist and every check must pass. Checks are absent, pending, failing, or unavailable."
-    checks=$(gh pr checks "$pr" --json bucket,state --jq '.[] | [.bucket, .state] | @tsv') ||
-        error "Could not verify successful checks. CI is required; no bypass is available."
-    [[ -n "$checks" ]] || error "No checks configured. CI must exist before automated merge/tag."
-    while IFS=$'\t' read -r bucket state; do
-        seen=true
-        [[ "$bucket" == pass ]] || error "A check is $bucket ($state); every check must succeed."
-        case "$state" in SUCCESS|success) ;; *) error "Check is not completed successfully: $state" ;; esac
-    done <<< "$checks"
-    [[ "$seen" == true ]] || error "No checks configured. CI is required."
-    pass "All reported checks completed successfully."
-}
-
 read_open_pr
 reviewed_head=$head_oid
 require_passing_checks
