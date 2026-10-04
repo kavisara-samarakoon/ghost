@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-controlled-input"
+description = "Prepare intent offline, explicitly transcribe/interpret reviewed input, and explicitly save inert intent plans from the main window. Native commands enforce consent and fixed endpoints."
+commands.allow = ["transcribe_ghost_voice", "prepare_ghost_intent", "interpret_ghost_intent", "save_ghost_intent_plan"]

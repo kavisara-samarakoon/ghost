@@ -106,7 +106,10 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   text is untrusted and never creates or executes workflow actions automatically.
 - The desktop performs no shell/CLI execution or automatic GitHub mutation,
   publishing, merging, deployment, tagging, or release. Snapshot/search and Action
-  Requests remain offline; transcription is the only desktop network path.
+  Requests remain offline. Desktop network access is limited to separately confirmed
+  voice transcription and intent interpretation. Intent interpretation produces
+  untrusted proposals only; a separate click may save an inert M34 plan draft,
+  which still requires manual CLI review and fresh execution confirmation.
 
 ## Coding Rules
 

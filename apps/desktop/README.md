@@ -42,6 +42,37 @@ Audio and sanitized transcript stay in memory; the only voice write is content-f
 `GHOST_HOME/desktop-voice-audit.jsonl`. Transcripts never create Action Requests,
 invoke CLI/orchestration, or run workflow actions. No automatic retry occurs.
 
+## M36 — Controlled Intent
+
+The Command page offers **Prepare Interpretation → Review sanitized intent →
+Send reviewed intent to OpenAI → Review proposal → optional Save Plan Draft**.
+Typed text stays local until Send. Voice transcripts enter the intent draft only
+through the explicit **Use transcript as intent** button; that copy is local and
+still requires Prepare and Send. Static browser preview cannot prepare/send/save.
+
+The native process makes at most one stateless `gpt-6.1-sol` Responses API request
+with strict Structured Outputs. Only sanitized intent is sent; the selected project
+alias stays local. No project/context/source files or tools are provided. Native
+validation accepts only a 1–8 step inert plan using the existing four M34 actions,
+or an empty-step clarification/unsupported result. No action or CLI runs.
+
+Before explicit Save, intent and proposals remain in memory. Save creates a private,
+exclusive `GHOST_HOME/intent-plans/<UTC-timestamp>-<uuid>.json` containing only
+`version` and `steps`. The bound alias is displayed separately. Its file SHA-256
+is distinct from M34's project-bound execution fingerprint: the owner must manually
+use `ghost orchestrate preview <alias> --plan <path>` and, if appropriate,
+`ghost orchestrate run <alias> --plan <path>` for independent validation and fresh
+M34 confirmation. Saving never invokes these commands or creates Action Requests.
+
+Only content-free metadata enters `desktop-intent-audit.jsonl`. Confirmed audit must
+be durable before credential lookup or transmission. A received proposal or saved
+plan is preserved if its completion audit fails, with a warning; GHOST never retries
+or duplicates automatically. Storage rejects symlink redirection, hard links,
+unsafe permissions, and entry/descriptor identity changes. New directories use
+0700; files use 0600. Transcription and interpretation are the only two controlled
+desktop OpenAI paths; both use the native process's `OPENAI_API_KEY`, with no
+credential storage, redirects, proxies, or automatic retries.
+
 ## M29 — Safe Desktop Action Requests
 
 The Command page offers **Prepare Action → Review Action Request → Save Request**

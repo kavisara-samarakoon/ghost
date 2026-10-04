@@ -3645,3 +3645,12 @@
 .request-list li { padding: 8px 0; }
 .request-list span { display: block; color: #a8b3c7; font-size: 12px; overflow-wrap: anywhere; margin-top: 5px; }
 @media (max-width: 680px) { .request-fields { grid-template-columns: 1fr; } .action-requests { padding: 20px; } }
+
+/* Controlled intent: literal review surfaces, no execution controls. */
+.intent-input { margin-top: 24px; padding: 28px; }
+.intent-input > p, .intent-input p { color: var(--text-secondary, #a7b4c8); line-height: 1.65; }
+.intent-input textarea { display: block; width: 100%; box-sizing: border-box; margin: 12px 0 20px; padding: 16px; resize: vertical; background: rgba(3, 10, 22, .72); color: #e9f0fa; border: 1px solid rgba(100, 175, 205, .22); border-radius: 12px; font: inherit; line-height: 1.6; }
+.intent-input pre { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; color: #e9f0fa; }
+.intent-input code { overflow-wrap: anywhere; color: #9edbef; }
+.intent-input li { padding: 10px 0; }
+.intent-feedback { border-left: 2px solid #72c5df; padding-left: 14px; }
