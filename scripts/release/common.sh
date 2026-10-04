@@ -112,3 +112,45 @@ confirm_exactly() {
     IFS= read -r response || error "Confirmation was not received."
     [[ "$response" == "$expected" ]] || error "Confirmation did not match. Operation cancelled."
 }
+
+# Shared strict CI gate; keep release and milestone merges equally fail closed.
+require_passing_checks() {
+    local checks bucket state seen=false
+    gh pr checks "$pr" || error "CI must exist and every check must pass. Checks are absent, pending, failing, or unavailable."
+    checks=$(gh pr checks "$pr" --json bucket,state --jq '.[] | [.bucket, .state] | @tsv') ||
+        error "Could not verify successful checks. CI is required; no bypass is available."
+    [[ -n "$checks" ]] || error "No checks configured. CI must exist before automated merge/tag."
+    while IFS=$'\t' read -r bucket state; do
+        seen=true
+        [[ "$bucket" == pass ]] || error "A check is $bucket ($state); every check must succeed."
+        case "$state" in SUCCESS|success) ;; *) error "Check is not completed successfully: $state" ;; esac
+    done <<< "$checks"
+    [[ "$seen" == true ]] || error "No checks configured. CI is required."
+    pass "All reported checks completed successfully."
+}
+
+# Prefix each TSV field so an empty API value cannot shift later fields in read.
+# gh's @tsv also escapes embedded newlines and tabs in titles.
+read_milestone_pr() {
+    local selector=$1 details number_field state_field head_field base_field url_field oid_field title_field
+    details=$(gh pr view "$selector" --json number,state,title,headRefName,baseRefName,url,headRefOid \
+        --jq '["number=" + (.number | tostring), "state=" + (.state // ""), "head=" + (.headRefName // ""), "base=" + (.baseRefName // ""), "url=" + (.url // ""), "oid=" + (.headRefOid // ""), "title=" + (.title // "")] | @tsv') ||
+        error "Cannot inspect PR $selector."
+    IFS=$'\t' read -r number_field state_field head_field base_field url_field oid_field title_field <<< "$details"
+    [[ "$number_field" == number=* && "$state_field" == state=* && "$head_field" == head=* &&
+       "$base_field" == base=* && "$url_field" == url=* && "$oid_field" == oid=* && "$title_field" == title=* ]] ||
+        error "Malformed PR information."
+    pr_number=${number_field#number=}
+    pr_state=${state_field#state=}
+    head_branch=${head_field#head=}
+    base=${base_field#base=}
+    pr_url=${url_field#url=}
+    head_oid=${oid_field#oid=}
+    pr_title=${title_field#title=}
+    [[ "$pr_number" =~ ^[1-9][0-9]*$ && "$pr_state" == OPEN && "$base" == main ]] ||
+        error "PR must have a positive number, be OPEN, and target main."
+    case "$head_branch" in ''|main|master) error "Refusing protected/empty PR head branch: $head_branch" ;; esac
+    validate_ref heads "$head_branch"
+    [[ "$head_oid" =~ ^([a-f0-9]{40}|[a-f0-9]{64})$ ]] || error "PR head commit is missing or invalid."
+    [[ "$pr_url" == https://* ]] || error "PR URL is missing or invalid."
+}
