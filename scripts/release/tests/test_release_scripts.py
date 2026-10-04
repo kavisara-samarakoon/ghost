@@ -22,6 +22,8 @@ def mock_command(tool, args, state):
     """Small deterministic command doubles; unknown commands fail closed."""
     if [tool, *args] in state.get("fail_calls", []):
         return 1, "Mock command failure"
+    if tool == "sleep":
+        return 0, ""
     if tool == "git":
         command = args[0]
         if command == "rev-parse":
@@ -118,6 +120,14 @@ def mock_command(tool, args, state):
                 return 1, ""
             fields = args[args.index("--json") + 1]
             if fields == "statusCheckRollup":
+                state["check_count_reads"] = state.get("check_count_reads", 0) + 1
+                if state.get("count_error_on_read") == state["check_count_reads"]:
+                    return 1, ""
+                counts = state.get("check_counts", [])
+                if counts:
+                    state["check_count"] = counts[
+                        min(state["check_count_reads"] - 1, len(counts) - 1)
+                    ]
                 return 0, str(state.get("check_count", 1))
             if fields == "state,mergeCommit":
                 return 0, "OPEN\t" if state.get(
@@ -162,6 +172,7 @@ def mock_command(tool, args, state):
             if "--help" in args:
                 return 0, "--watch" if not state.get("old_gh") else "checks help"
             if "--watch" in args:
+                state.update(state.get("after_watch", {}))
                 return state.get("watch_error", 0), ""
             if "--json" in args:
                 if state.get("checks_json_error"):
@@ -213,7 +224,7 @@ class ReleaseScriptsTest(unittest.TestCase):
         )
         self.bin_dir = self.root / "bin"
         self.bin_dir.mkdir()
-        for tool in ("git", "gh"):
+        for tool in ("git", "gh", "sleep"):
             executable = self.bin_dir / tool
             executable.write_text(
                 f"#!/bin/bash\nexec {shlex.quote(sys.executable)} "
@@ -399,12 +410,115 @@ class ReleaseScriptsTest(unittest.TestCase):
             any(call[:3] == ["gh", "pr", "merge"] for call in self.state()["calls"])
         )
 
-    def test_open_pr_reports_no_checks_without_claiming_pass(self):
+    def test_open_pr_no_checks_times_out_without_claiming_pass(self):
         self.configure(check_count=0)
         result = self.run_script("open-pr", ["--title", "Title", "--body", "Body"])
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn("checks have NOT passed", result.stdout)
+        self.assert_failed(result)
+        self.assertIn("CI checks never appeared", result.stderr)
+        self.assertIn(URL, result.stderr)
+        self.assertEqual(self.state()["check_count_reads"], 25)
+        sleeps = [call for call in self.state()["calls"] if call[0] == "sleep"]
+        self.assertEqual(sleeps, [["sleep", "5"]] * 24)
+        self.assertNotIn("Check watching completed", result.stdout)
         self.assertFalse(any("--watch" in call for call in self.state()["calls"]))
+        self.assert_no_merge()
+
+    def test_open_pr_checks_appear_before_timeout_then_watch(self):
+        for counts in ([0, 1], [0, 0, 6], [0] * 24 + [6]):
+            with self.subTest(counts=counts):
+                self.reset_mock(check_counts=counts)
+                result = self.run_script(
+                    "open-pr", ["--title", "Title", "--body", "Body"]
+                )
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(self.state()["check_count_reads"], len(counts))
+                calls = self.state()["calls"]
+                sleeps = [call for call in calls if call[0] == "sleep"]
+                self.assertEqual(sleeps, [["sleep", "5"]] * (len(counts) - 1))
+                watch = ["gh", "pr", "checks", URL, "--watch"]
+                last_poll = max(
+                    i for i, call in enumerate(calls) if "statusCheckRollup" in call
+                )
+                strict_read = next(
+                    i for i, call in enumerate(calls) if "bucket,state" in call
+                )
+                self.assertLess(last_poll, calls.index(watch))
+                self.assertLess(calls.index(watch), strict_read)
+                self.assertIn(
+                    "Check watching completed with successful CI", result.stdout
+                )
+                self.assert_no_merge()
+                self.assert_no_publication()
+
+    def test_open_pr_poll_api_or_malformed_count_fails_closed(self):
+        cases = [
+            {"count_error_on_read": 1},
+            {"check_counts": [0], "count_error_on_read": 2},
+        ]
+        cases.extend(
+            {"check_counts": [0, count]}
+            for count in ("", "null", "-1", "unknown", "00", "1.5")
+        )
+        for settings in cases:
+            with self.subTest(settings=settings):
+                self.reset_mock(**settings)
+                result = self.run_script(
+                    "open-pr", ["--title", "Title", "--body", "Body"]
+                )
+                self.assert_failed(result)
+                self.assertIn(URL, result.stderr)
+                self.assertLessEqual(self.state()["check_count_reads"], 2)
+                self.assertFalse(
+                    any("--watch" in call for call in self.state()["calls"])
+                )
+                self.assert_no_merge()
+
+    def test_open_pr_requires_watch_support(self):
+        self.configure(old_gh=True)
+        result = self.run_script("open-pr", ["--title", "Title", "--body", "Body"])
+        self.assert_failed(result)
+        self.assertIn("cannot watch checks", result.stderr)
+        self.assertIn(URL, result.stderr)
+        self.assert_no_merge()
+
+    def test_open_pr_watch_success_still_requires_strict_successful_ci(self):
+        checks = [
+            f"pass\t{state}"
+            for state in (
+                "PENDING",
+                "QUEUED",
+                "IN_PROGRESS",
+                "WAITING",
+                "NEUTRAL",
+                "SKIPPED",
+                "CANCELLED",
+                "FAILURE",
+                "ERROR",
+                "UNKNOWN",
+            )
+        ]
+        checks.extend(("", "pending\tSUCCESS", "pass\tSUCCESS\nfail\tFAILURE"))
+        cases = [{"checks": value} for value in checks]
+        cases.extend(
+            (
+                {"checks_error": 8},
+                {"checks_json_error": True},
+                {"after_watch": {"check_count": 0}},
+            )
+        )
+        for settings in cases:
+            with self.subTest(settings=settings):
+                self.reset_mock(**settings)
+                result = self.run_script(
+                    "open-pr", ["--title", "Title", "--body", "Body"]
+                )
+                self.assert_failed(result)
+                self.assertIn(URL, result.stderr)
+                self.assertIn(
+                    ["gh", "pr", "checks", URL, "--watch"], self.state()["calls"]
+                )
+                self.assertNotIn("Check watching completed", result.stdout)
+                self.assert_no_merge()
 
     def test_open_pr_refuses_dirty_tree(self):
         self.configure(dirty=True)
@@ -435,10 +549,16 @@ class ReleaseScriptsTest(unittest.TestCase):
             )
 
     def test_open_pr_watch_failure_reports_url(self):
-        self.configure(watch_error=1)
-        result = self.run_script("open-pr", ["--title", "Title", "--body", "Body"])
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn(URL, result.stderr)
+        for code in (1, 8):
+            with self.subTest(code=code):
+                self.reset_mock(watch_error=code)
+                result = self.run_script(
+                    "open-pr", ["--title", "Title", "--body", "Body"]
+                )
+                self.assert_failed(result)
+                self.assertIn(URL, result.stderr)
+                self.assertNotIn("Check watching completed", result.stdout)
+                self.assert_no_merge()
 
     def test_merge_success_pins_head_and_tags_merge_commit(self):
         result = self.merge()
@@ -876,6 +996,16 @@ class ReleaseScriptsTest(unittest.TestCase):
             "PR body",
         ]
         watch = ["gh", "pr", "checks", URL, "--watch"]
+        verified = [
+            "gh",
+            "pr",
+            "checks",
+            URL,
+            "--json",
+            "bucket,state",
+            "--jq",
+            ".[] | [.bucket, .state] | @tsv",
+        ]
         merge = [
             "gh",
             "pr",
@@ -886,7 +1016,9 @@ class ReleaseScriptsTest(unittest.TestCase):
             "--match-head-commit",
             HEAD,
         ]
-        indices = [calls.index(call) for call in (commit, push, create, watch, merge)]
+        indices = [
+            calls.index(call) for call in (commit, push, create, watch, verified, merge)
+        ]
         self.assertEqual(indices, sorted(indices))
         self.assertIn(
             'Type exactly: commit "Milestone" with approved files', result.stdout
@@ -897,6 +1029,46 @@ class ReleaseScriptsTest(unittest.TestCase):
         self.assertFalse(self.state()["dirty"])
         self.assertTrue(self.state()["merged"])
         self.assert_no_publication()
+
+    def test_finish_waits_for_ci_start_then_success_before_merge(self):
+        self.configure(check_counts=[0, 0, 6])
+        result = self.finish()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        calls = self.state()["calls"]
+        watch = calls.index(["gh", "pr", "checks", URL, "--watch"])
+        verified = next(
+            i
+            for i, call in enumerate(calls)
+            if call[:4] == ["gh", "pr", "checks", URL] and "--json" in call
+        )
+        merge = next(
+            i for i, call in enumerate(calls) if call[:3] == ["gh", "pr", "merge"]
+        )
+        self.assertLess(watch, verified)
+        self.assertLess(verified, merge)
+        self.assertEqual(self.state()["check_count_reads"], 3)
+        self.assertEqual(
+            [call for call in calls if call[0] == "sleep"], [["sleep", "5"]] * 2
+        )
+        # The two independent merge CI reads remain in addition to open-pr's read.
+        self.assertEqual(self.state()["check_reads"], 3)
+        self.assertEqual(self.state()["branch"], "main")
+        self.assertTrue(self.state()["merged"])
+        self.assert_no_publication()
+
+    def test_finish_ci_never_starts_stops_before_merge_flow(self):
+        self.configure(check_count=0)
+        result = self.finish()
+        self.assert_failed(result)
+        self.assertTrue(self.state()["committed"])
+        self.assertIn(URL, result.stderr)
+        self.assertIn("CI checks never appeared", result.stderr)
+        self.assertEqual(self.state()["check_count_reads"], 25)
+        self.assertNotIn("Resolved PR", result.stdout)
+        self.assertNotIn("Type exactly: merge", result.stdout)
+        self.assertFalse(any("--watch" in call for call in self.state()["calls"]))
+        self.assert_no_merge()
+        self.assert_not_called("git", "switch")
 
     def test_finish_preserves_explicit_files_and_literal_arguments(self):
         files = [
