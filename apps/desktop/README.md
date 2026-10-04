@@ -32,6 +32,16 @@ write workflow files, execute shell/CLI commands, call AI/network services, read
 `.env` files, or search source code. Native actions require an explicit user click
 and revalidate allowlisted local artifacts.
 
+M35 adds a separate **Voice Input** panel: explicitly start a recording (maximum
+30 seconds / 8 MiB), stop and play it locally, then explicitly **Send to OpenAI
+for transcription**. The native process uses `OPENAI_API_KEY` from its environment
+and one fixed `gpt-transcribe` request to the OpenAI transcription endpoint.
+Normally launched macOS apps may not inherit shell environment variables; GHOST
+does not read credential files or store keys. Browser preview cannot record/send.
+Audio and sanitized transcript stay in memory; the only voice write is content-free
+`GHOST_HOME/desktop-voice-audit.jsonl`. Transcripts never create Action Requests,
+invoke CLI/orchestration, or run workflow actions. No automatic retry occurs.
+
 ## M29 — Safe Desktop Action Requests
 
 The Command page offers **Prepare Action → Review Action Request → Save Request**

@@ -101,8 +101,12 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   notes, outputs, next-step drafts, handoffs, or other workflow records.
 - Pending requests are untrusted drafts; any future consumer must require fresh
   human confirmation before a workflow change.
-- The desktop performs no shell/CLI execution, AI/network calls, or automatic
-  GitHub mutation, publishing, merging, deployment, tagging, or release.
+- Desktop voice capture starts only on click, remains in memory, and sends one
+  reviewed recording to OpenAI transcription only after explicit Send. Transcript
+  text is untrusted and never creates or executes workflow actions automatically.
+- The desktop performs no shell/CLI execution or automatic GitHub mutation,
+  publishing, merging, deployment, tagging, or release. Snapshot/search and Action
+  Requests remain offline; transcription is the only desktop network path.
 
 ## Coding Rules
 

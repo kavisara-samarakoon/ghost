@@ -1,5 +1,33 @@
 mod snapshot;
+mod voice;
 use snapshot::actions::{Action, ActionState};
+
+#[tauri::command]
+async fn transcribe_ghost_voice(
+    window: tauri::WebviewWindow,
+    request: tauri::ipc::Request<'_>,
+) -> Result<voice::VoiceResult, &'static str> {
+    let header = |name| {
+        request
+            .headers()
+            .get(name)
+            .and_then(|value| value.to_str().ok())
+    };
+    let audio = voice::validate(
+        window.label(),
+        request.body(),
+        header("x-ghost-voice-mime"),
+        header("x-ghost-voice-duration-ms"),
+        header("x-ghost-voice-confirmed"),
+    )?;
+    let lease = voice::VoiceLease::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        voice::from_environment(audio)
+    })
+    .await
+    .map_err(|_| "transport")?
+}
 
 #[tauri::command(rename_all = "snake_case")]
 fn prepare_ghost_action_request(
@@ -85,7 +113,8 @@ pub fn run() {
             reveal_ghost_artifact,
             search_ghost_memory,
             prepare_ghost_action_request,
-            save_ghost_action_request
+            save_ghost_action_request,
+            transcribe_ghost_voice
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
