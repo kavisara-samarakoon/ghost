@@ -95,12 +95,17 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   click-only actions for approved generated artifacts.
 - Desktop Action Requests use Prepare Action -> Review Action Request -> explicit
   Save Request. Saved requests are pending local drafts only.
-- The narrow desktop write path creates pending action-request JSON,
+- The desktop Action Request write path creates pending action-request JSON,
   `desktop-action-audit.jsonl`, and their storage directories when needed.
-- No request consumer or executor exists. Saving requests does not mutate sessions,
+- Desktop has no workflow executor. Saving requests does not mutate sessions,
   notes, outputs, next-step drafts, handoffs, or other workflow records.
-- Pending requests are untrusted drafts; any future consumer must require fresh
-  human confirmation before a workflow change.
+- CLI M32 consumes pending requests only after fresh exact `APPLY <id>` confirmation.
+  CLI M34 executes 1–8 explicit local steps only after full plan preview and exact
+  `RUN <alias> PLAN <sha256>` confirmation. Both use the same fixed four-action dispatcher.
+- CLI M33 sends sanitized allowlisted context only after exact `SEND <alias> TO OPENAI`;
+  saved responses are untrusted advisory drafts and never enter execution automatically.
+- Desktop M36 plans are inert files. Manual M34 review/confirmation remains independent;
+  AI has no execution authority.
 - Desktop voice capture starts only on click, remains in memory, and sends one
   reviewed recording to OpenAI transcription only after explicit Send. Transcript
   text is untrusted and never creates or executes workflow actions automatically.

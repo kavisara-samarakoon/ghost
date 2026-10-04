@@ -1,11 +1,13 @@
 # GHOST Desktop — Command Space
 
-GHOST v0.4.0-alpha is the Safe Desktop Action Requests checkpoint: a local macOS
+The published GHOST v0.4.0-alpha baseline is the Safe Desktop Action Requests checkpoint: a local macOS
 workflow cockpit for reviewing projects, active sessions, memory, and artifacts
 through a read-only snapshot. Native actions
 include click-only Open/Reveal for approved generated artifacts and M29's local
 pending action requests.
-See the [release checkpoint](../../docs/release-v0.4.0-alpha.md) for scope and versions.
+See the [release checkpoint](../../docs/release-v0.4.0-alpha.md) for historical scope
+and versions. Current unreleased desktop capabilities also include M35 voice and
+M36 intent below; versions remain unchanged.
 
 From `apps/desktop`:
 
@@ -22,6 +24,7 @@ pnpm build
 pnpm test
 pnpm tauri build
 cd src-tauri
+cargo fmt --check
 cargo test --locked
 cargo check --locked
 ```
@@ -89,14 +92,18 @@ they do not execute CLI commands or mutate sessions, notes, outputs, next-step
 drafts, handoffs, or other workflow records. The desktop does not automatically
 publish, merge, deploy, tag, or release. The user must review and manually
 run/approve real CLI workflow changes.
-No request consumer or automatic execution is included.
+The desktop has no request consumer or automatic execution. CLI M32 separately
+reviews/applies pending requests with fresh exact `APPLY <id>` confirmation.
 
 The only writes are the request file and `desktop-action-audit.jsonl`, plus their
 storage directories if missing. Audit events contain timestamp, event name,
 action type, project alias, and request ID, excluding goal/note text. Requests and
 audit files are created with mode 0600; new directories use 0700. Unix storage
 uses descriptor-relative access, rejects symlinks and hard-linked audit files,
-and never overwrites an existing request. Other platforms fail closed. The parent
+and never overwrites an existing request. File and parent-directory fsync plus
+entry/descriptor checks guard completion. Audit appends are bounded to 16 MiB and
+reject non-private modes/current-owner mismatches. Partial persistence remains
+inert and must be inspected before retry. Other platforms fail closed. The parent
 of a custom `GHOST_HOME` must already exist.
 
 Goal/note text is limited to 8000 UTF-8 bytes. Recognizable secrets and unsupported
@@ -110,3 +117,12 @@ operation; the separate request save command has this narrow write scope.
 If a request saves but audit writing fails, the UI reports the saved path and
 audit failure explicitly. Do not retry by creating a duplicate. This milestone
 does not provide a transaction across the two files or an execution approval system.
+
+## Production frontend boundary
+
+Production CSP permits bundled scripts/styles/images, Tauri IPC, and `blob:` only
+for local audio playback. It grants no remote script, iframe/object, or OpenAI
+frontend origin. Capabilities are main-window-only with fixed native commands;
+no generic shell/HTTP/filesystem permissions are granted. OpenAI calls remain
+Rust-native. See [M37 readiness evidence](../../docs/release-readiness-m37.md) for
+local packaging, distribution blockers, and untested live-provider behavior.

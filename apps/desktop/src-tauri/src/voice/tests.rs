@@ -535,6 +535,20 @@ mod audit_storage {
         assert_eq!(fs::read_to_string(path).unwrap().lines().count(), 2);
     }
     #[test]
+    fn unsafe_existing_mode_is_rejected_before_writable_open() {
+        for mode in [0o644, 0o400] {
+            let (_root, home) = fixture();
+            let store = AuditStore::open(&home).unwrap();
+            store.append(event()).unwrap();
+            let path = home.join("desktop-voice-audit.jsonl");
+            fs::set_permissions(&path, fs::Permissions::from_mode(mode)).unwrap();
+            assert!(store
+                .test_append(event(), |_| panic!("Unsafe target was opened"))
+                .is_err());
+            assert_eq!(path.metadata().unwrap().mode() & 0o7777, mode);
+        }
+    }
+    #[test]
     fn symlinked_home_and_parent_are_rejected() {
         let (root, home) = fixture();
         let target = root.path().join("target");

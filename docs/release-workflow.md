@@ -67,11 +67,7 @@ cd ../..
 For release script changes:
 
 ```sh
-bash -n scripts/release/common.sh
-bash -n scripts/release/start-milestone.sh
-bash -n scripts/release/commit-milestone.sh
-bash -n scripts/release/open-pr.sh
-bash -n scripts/release/merge-and-tag.sh
+bash -c 'for script in scripts/release/*.sh; do bash -n "$script" || exit 1; done'
 python3 -m unittest discover -s scripts/release/tests -v
 git diff --check
 ```
@@ -200,3 +196,53 @@ fetches/prunes and prints final status, branches, and recent history.
   PR may already be merged or an annotated tag may already exist locally.
 - These helpers never automatically commit or push merely because documentation
   or tests were updated. Run them only when you intend the stated operation.
+
+## Ordinary milestones — merge without a tag
+
+```sh
+scripts/release/merge-milestone.sh --pr 12
+```
+
+After reviewing the PR and all successful CI checks, type exactly `merge PR #12`.
+The helper pins the PR head, rechecks CI and PR identity after confirmation,
+squash-merges and deletes the milestone branch, then fast-forward-syncs local main
+and verifies it matches origin and contains the actual merged commit. It never
+creates or pushes a tag. Queued/uncertain merges and failed sync stop with manual
+inspection instructions. Tags/releases belong only to separate release milestones;
+use `merge-and-tag.sh` for an explicitly reviewed release tag.
+
+## Finish an ordinary milestone — two human gates
+
+```sh
+scripts/release/finish-milestone.sh \
+  --message "Harden confirmed boundaries" \
+  --title "Harden confirmed boundaries" \
+  --body-file /path/to/reviewed-pr-body.txt \
+  --files path/to/approved-file
+```
+
+`--files` must be last and list exact approved paths. `--body` is an alternative
+to `--body-file`. The helper delegates approved-file commit, PR creation/check
+waiting, then ordinary milestone merge. There are two separate human gates:
+`commit "<message>" with approved files`, then `merge PR #<number>`. Cancelling
+either stops the flow. Branch/head changes, missing/failed CI, and partial remote
+outcomes never grant permission to continue. No tag, release, or deployment occurs.
+Inspect the actual state before rerunning a partially successful helper.
+
+## Current CI validation
+
+CI runs CLI pytest/Ruff on Python 3.11 and 3.14; frozen-lockfile desktop frontend
+build/tests; native macOS `cargo fmt --check`, `cargo test --locked`, and
+`cargo check --locked`; a loop applying `bash -n` to `scripts/release/*.sh` (all seven current helpers)
+and mocked release-safety tests; whitespace/cache/build-artifact hygiene. Native
+contract tests and CLI consumer tests use the same checked-in synthetic fixtures.
+Local release preparation additionally validates Python packaging/dependencies,
+isolated CLI smoke, and actual local app/DMG bundles. Clippy is a separate optional
+audit unless cleanly adopted into CI. No CI check publishes a release.
+
+These scripts are manual repository-maintenance tooling. Their Git/GitHub
+commands confer no execution authority on the GHOST application, desktop, AI
+responses, or voice transcripts.
+
+`bash -n scripts/release/*.sh` alone checks only the first expanded filename;
+remaining names become positional arguments. The CI loop checks every helper.

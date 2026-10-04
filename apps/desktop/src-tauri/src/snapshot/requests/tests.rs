@@ -22,6 +22,7 @@ fn request(kind: &str, payload: serde_json::Value) -> ActionRequest {
 fn all_actions_create_pending_json_and_body_free_audit_without_workflow_mutation() {
     let (_root, home) = fixture();
     fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
     fs::write(home.join("projects.yaml"), "version: 1\nprojects: []\n").unwrap();
     for (kind, payload) in [
         (
@@ -217,6 +218,7 @@ fn storage_rejects_symlinks_hardlinks_and_nonregular_audit_targets() {
     assert!(save(&home, &request).is_err());
     fs::remove_file(&home).unwrap();
     fs::create_dir(&home).unwrap();
+    fs::set_permissions(&home, fs::Permissions::from_mode(0o700)).unwrap();
     symlink(&outside, home.join("action-requests")).unwrap();
     assert!(save(&home, &request).is_err());
     fs::remove_file(home.join("action-requests")).unwrap();
@@ -259,4 +261,157 @@ fn request_bridge_has_no_execution_or_network_dispatch() {
             );
         }
     }
+}
+
+#[test]
+fn shared_contract_requests_are_exact_desktop_saved_output() {
+    let contract = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../contracts/action-request-v1");
+    let (_root, home) = fixture();
+    let mut count = 0;
+    for entry in fs::read_dir(contract).unwrap() {
+        let value: serde_json::Value =
+            serde_json::from_slice(&fs::read(entry.unwrap().path()).unwrap()).unwrap();
+        let action: Action = serde_json::from_value(
+            json!({"action_type":value["action_type"],"payload":value["payload"]}),
+        )
+        .unwrap();
+        let mut produced =
+            prepare(value["project_alias"].as_str().unwrap().into(), action).unwrap();
+        produced.id = value["id"].as_str().unwrap().into();
+        produced.created_at = value["created_at"].as_str().unwrap().into();
+        let saved = save(&home, &produced).unwrap();
+        assert_eq!(
+            serde_json::from_slice::<serde_json::Value>(&fs::read(saved.path).unwrap()).unwrap(),
+            value
+        );
+        count += 1;
+    }
+    assert_eq!(count, 7);
+}
+
+#[test]
+fn timestamp_contract_rejects_noncanonical_utc_year_zero_and_leap_seconds() {
+    for value in [
+        "2026-10-04T00:00:00Z",
+        "2026-10-04T00:00:00.1Z",
+        "2026-10-04T00:00:00.000000000+00:00",
+        "0000-10-04T00:00:00.000000000Z",
+        "2026-10-04T00:00:60.000000000Z",
+    ] {
+        let (_root, home) = fixture();
+        let mut changed = request("generate_next_steps", json!({}));
+        changed.created_at = value.into();
+        assert!(save(&home, &changed).is_err());
+        assert!(!home.exists());
+    }
+}
+
+#[test]
+fn replaced_request_or_directory_is_rejected_without_unlinking_replacement() {
+    for phase in ["request-opened", "request-synced", "request-parent-synced"] {
+        for directory in [false, true] {
+            let (_root, home) = fixture();
+            let request = request("generate_next_steps", json!({}));
+            let path = home
+                .join("action-requests")
+                .join(request.filename().unwrap());
+            let outcome = storage::test_save(&home, &request, |at| {
+                if at == phase {
+                    if directory {
+                        fs::rename(home.join("action-requests"), home.join("old-requests"))
+                            .unwrap();
+                        fs::create_dir(home.join("action-requests")).unwrap();
+                    } else {
+                        fs::remove_file(&path).unwrap();
+                        fs::write(&path, "replacement remains intact").unwrap();
+                    }
+                }
+                Ok(())
+            });
+            assert!(outcome.is_err());
+            if !directory {
+                assert_eq!(
+                    fs::read_to_string(path).unwrap(),
+                    "replacement remains intact"
+                );
+            }
+        }
+    }
+}
+
+#[test]
+fn audit_identity_bounds_private_modes_and_partial_failure_are_enforced() {
+    for mode in [0o644, 0o400, 0o4600] {
+        let (_root, home) = fixture();
+        let request = request("generate_next_steps", json!({}));
+        save(&home, &request).unwrap();
+        let audit = home.join("desktop-action-audit.jsonl");
+        fs::set_permissions(&audit, fs::Permissions::from_mode(mode)).unwrap();
+        assert!(save(&home, &self::request("generate_next_steps", json!({}))).is_err());
+        assert_eq!(
+            fs::metadata(audit).unwrap().permissions().mode() & 0o7777,
+            mode
+        );
+    }
+    for phase in ["audit-opened", "audit-synced", "audit-parent-synced"] {
+        let (_root, home) = fixture();
+        let request = request("generate_next_steps", json!({}));
+        let path = home
+            .join("action-requests")
+            .join(request.filename().unwrap());
+        let result = storage::test_save(&home, &request, |at| {
+            if at == phase {
+                let audit = home.join("desktop-action-audit.jsonl");
+                fs::remove_file(&audit).unwrap();
+                fs::write(audit, "replacement").unwrap();
+            }
+            Ok(())
+        });
+        if phase == "audit-opened" {
+            assert!(result.is_err());
+            assert!(!path.exists());
+        } else {
+            assert!(!result.unwrap().audit_recorded);
+            assert!(path.exists());
+        }
+    }
+    for phase in [
+        "request-synced",
+        "request-parent-synced",
+        "audit-synced",
+        "audit-parent-synced",
+    ] {
+        let (_root, home) = fixture();
+        let request = request("generate_next_steps", json!({}));
+        let result = storage::test_save(&home, &request, |at| {
+            if at == phase {
+                Err("injected durability failure")
+            } else {
+                Ok(())
+            }
+        });
+        let path = home
+            .join("action-requests")
+            .join(request.filename().unwrap());
+        assert!(path.exists());
+        if phase.starts_with("audit-") {
+            assert!(!result.unwrap().audit_recorded);
+        } else {
+            assert!(result.is_err());
+        }
+    }
+    let (_root, home) = fixture();
+    save(&home, &request("generate_next_steps", json!({}))).unwrap();
+    fs::OpenOptions::new()
+        .write(true)
+        .open(home.join("desktop-action-audit.jsonl"))
+        .unwrap()
+        .set_len(16 * 1024 * 1024)
+        .unwrap();
+    assert!(save(&home, &request("generate_next_steps", json!({}))).is_err());
+    assert_eq!(
+        fs::read_dir(home.join("action-requests")).unwrap().count(),
+        1
+    );
 }

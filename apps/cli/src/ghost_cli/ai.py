@@ -27,6 +27,7 @@ from ghost_cli.registry import find_project
 MAX_TASK_BYTES = 16 * 1024
 MAX_AI_INPUT_BYTES = 128 * 1024
 MAX_RESPONSE_BYTES = 256 * 1024
+MAX_AUDIT_BYTES = 16 * 1024 * 1024
 MAX_OUTPUT_TOKENS = 4000
 TIMEOUT_SECONDS = 30
 INSTRUCTIONS = (
@@ -358,6 +359,7 @@ def _child_directory(stack: ExitStack, parent: int, name: str, *, create: bool =
     if create:
         try:
             os.mkdir(name, 0o700, dir_fd=parent)
+            os.fsync(parent)
         except FileExistsError:
             pass
     descriptor = os.open(
@@ -366,7 +368,19 @@ def _child_directory(stack: ExitStack, parent: int, name: str, *, create: bool =
         dir_fd=parent,
     )
     stack.callback(os.close, descriptor)
+    _verify_directory_child(parent, name, descriptor, private=create)
     return descriptor
+
+
+def _verify_directory_child(parent: int, name: str, descriptor: int, *, private: bool) -> None:
+    entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
+    opened = os.fstat(descriptor)
+    if (
+        not stat.S_ISDIR(entry.st_mode)
+        or (entry.st_dev, entry.st_ino) != (opened.st_dev, opened.st_ino)
+        or (private and (opened.st_uid != os.geteuid() or stat.S_IMODE(opened.st_mode) != 0o700))
+    ):
+        raise GhostError(UNSAFE)
 
 
 @contextmanager
@@ -381,11 +395,12 @@ def _local_phase(review: Review) -> Iterator[tuple[ExitStack, int, int]]:
             if (info.st_dev, info.st_ino) != expected:
                 raise GhostError(UNSAFE)
         yield stack, home_fd, workspace_fd
+        _verify(review)
 
 
-def _verify_audit_child(parent: int, descriptor: int) -> None:
+def _verify_private_child(parent: int, name: str, descriptor: int) -> None:
     """Require the durable audit name and open handle to identify the same private file."""
-    entry = os.stat("audit.jsonl", dir_fd=parent, follow_symlinks=False)
+    entry = os.stat(name, dir_fd=parent, follow_symlinks=False)
     opened = os.fstat(descriptor)
     for info in (entry, opened):
         if (
@@ -399,12 +414,28 @@ def _verify_audit_child(parent: int, descriptor: int) -> None:
         raise GhostError(UNSAFE)
 
 
+def _verify_audit_child(parent: int, descriptor: int) -> None:
+    _verify_private_child(parent, "audit.jsonl", descriptor)
+
+
 def _append_audit(descriptor: int, event: str, metadata: dict[str, Any]) -> None:
     line = serialize_event(event, metadata).encode("utf-8")
     flags = os.O_WRONLY | os.O_CREAT | os.O_APPEND | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC
+    try:
+        existing = os.stat("audit.jsonl", dir_fd=descriptor, follow_symlinks=False)
+    except FileNotFoundError:
+        pass
+    else:
+        if (
+            not stat.S_ISREG(existing.st_mode) or existing.st_nlink != 1
+            or existing.st_uid != os.geteuid() or stat.S_IMODE(existing.st_mode) != 0o600
+        ):
+            raise GhostError(UNSAFE)
     target = os.open("audit.jsonl", flags, 0o600, dir_fd=descriptor)
     try:
         _verify_audit_child(descriptor, target)
+        if os.fstat(target).st_size + len(line) > MAX_AUDIT_BYTES:
+            raise GhostError(UNSAFE)
         if os.write(target, line) != len(line):
             raise GhostError(UNSAFE)
         os.fsync(target)
@@ -450,16 +481,28 @@ def _save_response(review: Review, text: str) -> Path:
     try:
         with _local_phase(review) as (stack, home_fd, workspace_fd):
             directory = workspace_fd
+            chain = []
             for name in ("drafts", "ai", "openai"):
-                directory = _child_directory(stack, directory, name, create=True)
+                child = _child_directory(stack, directory, name, create=True)
+                chain.append((directory, name, child))
+                directory = child
             name = f"{generated_at:%Y%m%dT%H%M%S%fZ}-{uuid4().hex}.md"
             flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC
             descriptor = os.open(name, flags, 0o600, dir_fd=directory)
+            def verify_storage() -> None:
+                _verify(review)
+                for parent, child_name, child in chain:
+                    _verify_directory_child(parent, child_name, child, private=True)
+                _verify_private_child(directory, name, descriptor)
+
             with os.fdopen(descriptor, "w", encoding="utf-8") as stream:
+                verify_storage()
                 stream.write(content)
                 stream.flush()
                 os.fsync(stream.fileno())
-            os.fsync(directory)
+                verify_storage()
+                os.fsync(directory)
+                verify_storage()
             output = review.project.path / ".ghost" / "drafts" / "ai" / "openai" / name
             metadata = _metadata(review) | {
                 "draft": f"drafts/ai/openai/{name}",

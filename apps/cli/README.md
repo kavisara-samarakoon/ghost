@@ -1,13 +1,11 @@
 # GHOST CLI
 
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
-workflow coordinator for Kavisara Samarakoon. This package implements Milestone 1
-(Local Foundation), Milestone 2 (Session Manager), Milestone 3 (Context Packs
-and AI Handoff Generators), Milestone 4 (Output Logger + Next-Step Summary),
-Milestone 5 (Update Pack Generator), Milestone 6 (Doctor + Release Readiness),
-Milestone 7 (Real Project Integration Demo), and Milestone 8 (v0.1.0 Candidate Polish).
-GHOST tracks goals and notes, stores sanitized supplied outputs, and writes local
-Markdown drafts. It does not run workflows or connect to an AI service.
+workflow coordinator for Kavisara Samarakoon. The current unreleased CLI includes
+local projects/sessions/drafts, read-only pending Action Request inspection (M31),
+exact-confirmed request execution (M32), controlled advisory AI review (M33), and
+finite confirmed local orchestration (M34). It never executes shell commands or
+Git/GitHub operations. Handoff generation remains offline.
 
 ## Install and validate
 
@@ -49,7 +47,8 @@ There is no runtime Git lookup, configuration read, or network version check.
 When changing that value, rebuild/reinstall the package to refresh installed metadata.
 
 The [v0.4.0-alpha release checkpoint](../../docs/release-v0.4.0-alpha.md) uses Python's
-normalized `0.4.0a0` package version. CLI commands and storage behavior are unchanged.
+normalized `0.4.0a0` package version. That document is historical; subsequent
+unreleased M31–M34 CLI capabilities do not change this version baseline.
 The [v0.1.0 candidate checklist](../../docs/release-candidate-v0.1.0.md) remains
 historical. Start safely with `ghost demo nexora`, then follow its printed report;
 use the printed demo home for subsequent `ghost doctor` or session inspection.
@@ -80,6 +79,59 @@ ghost project show my-project
 - `project list` and `project show` read the registry without creating storage.
   Empty lists include setup instructions; unknown aliases return an error.
 - Command errors exit with status 1; argument usage errors use Typer's status 2.
+
+## Controlled requests, review, and orchestration — M31–M34
+
+```sh
+ghost request list --project my-project
+ghost request show <request-id>
+ghost request apply <request-id>
+ghost orchestrate preview my-project --plan /path/to/plan.json
+ghost orchestrate run my-project --plan /path/to/plan.json
+ghost orchestrate list --project my-project
+ghost orchestrate show <run-id>
+ghost ai review my-project --provider openai --model <safe-model> --task "Review recorded state."
+```
+
+`request apply` previews the exact pending request and requires case-sensitive
+`APPLY <request-id>`. It pins reviewed request/home/project identity, durably claims
+one attempt, and uses the four explicit local actions only: `start_session`,
+`add_session_note`, `generate_next_steps`, `create_handoff`. Handoff providers are
+exactly `codex`, `chatgpt`, `gemini`, `antigravity`. Read-only list/show never apply.
+
+`orchestrate` accepts UTF-8 JSON version 1 with 1–8 strict steps, raw file limit
+64 KiB, and goal/note limit 8000 UTF-8 bytes. It sanitizes and freezes the plan,
+binds the CLI alias locally, and requires `RUN <alias> PLAN <full-sha256>` before
+claim/audit and sequential dispatch. No unattended bypass, output interpolation,
+retry, resume, or orchestration rollback exists. A stopped run may have durable
+prior actions; inspect project state and lifecycle records before another run.
+
+Desktop M36 saved JSON contains only `version` and `steps`. Its file SHA differs
+from M34's alias-bound normalized execution fingerprint. Manual M34 review is
+always fresh; saving an AI proposal never approves execution.
+
+M33 requires explicit provider `openai`, an explicit safe model, and exactly one
+of `--task`/`--task-file`. After a literal sanitized task/context preview, exact
+`SEND <alias> TO OPENAI` authorizes one fixed HTTPS Responses POST, `store:false`,
+no tools/retry. Only registered identity, project/status/decisions/milestones,
+and already-allowlisted active session metadata/notes enter context. No source,
+Git, audit, prior AI draft, or unrelated artifact scan is added. Task ≤16 KiB,
+total outbound logical input ≤128 KiB, HTTP body ≤256 KiB; output tokens default
+1200 and bound 1–4000. Unicode formatting is rejected before preview; output is
+sanitized before display/storage. Credentials come only from process
+`OPENAI_API_KEY` after confirmation and are never saved/audited.
+
+A successful AI response creates a private exclusive advisory draft under
+`.ghost/drafts/ai/openai/`. Confirmed audit failure blocks network. Storage failure
+after provider work warns against retry; a saved draft survives final audit failure.
+M33 output never invokes requests, orchestration, or the dispatcher.
+
+Global lifecycle locations are `action-requests/`, `action-request-claims/`,
+`action-request-completed/`, `action-request-failed/`, `orchestration-claims/`,
+`orchestration-completed/`, and `orchestration-ambiguous/`. Security-critical claims,
+audits, and AI drafts enforce descriptor/name identity, private files/directories,
+no symlinks/hardlinks, and durable writes. Legacy domain mutations remain multi-file
+operations rather than atomic transactions; do not infer global crash recovery.
 
 ## Session commands
 
@@ -539,6 +591,6 @@ fixed sample inputs, and a retained report; it does not change their product beh
 Tests isolate both `GHOST_HOME` and the fallback home, so even default-path tests cannot touch
 the real `~/.ghost`.
 
-This milestone has no AI API calls, voice, cloud features, database, subprocess
-execution, or GitHub automation. Drafts are not approvals. The separate desktop
-companion in `apps/desktop` is outside this CLI-specific milestone.
+M33 is the only CLI AI/network path. Voice and intent interpretation belong to
+separate desktop M35/M36 paths. The CLI has no subprocess execution, Git/GitHub
+automation, cloud sync, database, or agent loop. Drafts are not approvals.

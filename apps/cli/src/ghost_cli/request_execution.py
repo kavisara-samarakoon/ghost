@@ -24,9 +24,12 @@ from ghost_cli.action_requests import (
     scan_action_requests,
 )
 from ghost_cli.audit import serialize_event
+from ghost_cli.context_pack import read_yaml_source
 from ghost_cli.local_actions import dispatch_local
+from ghost_cli.models import ProjectRecord
 from ghost_cli.paths import GhostError
 from ghost_cli.redaction import redact_text
+from ghost_cli.registry import find_project
 
 CLAIMS = "action-request-claims"
 COMPLETED = "action-request-completed"
@@ -46,6 +49,7 @@ class RequestReview:
     pending_fd: int
     original_fd: int
     document: RequestDocument
+    project_binding: tuple[ProjectRecord, tuple[tuple[int, int], ...]] | None
 
     @property
     def request(self) -> ActionRequest:
@@ -93,8 +97,32 @@ def _open_child(stack: ExitStack, parent: int, name: str) -> int:
     return descriptor
 
 
+def _project_binding(
+    alias: str, home: Path
+) -> tuple[ProjectRecord, tuple[tuple[int, int], ...]] | None:
+    try:
+        project = find_project(alias, home)
+    except GhostError:
+        # An unresolved alias must remain unresolved; the workflow still rejects it.
+        return None
+    identities = []
+    for path in (project.path, project.path / ".ghost"):
+        if path.resolve() != path or path.is_symlink():
+            raise GhostError(UNSAFE)
+        metadata = path.stat()
+        if not stat.S_ISDIR(metadata.st_mode):
+            raise GhostError(UNSAFE)
+        identities.append(_identity(metadata))
+    recorded = read_yaml_source(project.path / ".ghost" / "project.yaml")
+    if recorded.get("alias") != alias or recorded.get("path") != str(project.path):
+        raise GhostError(UNSAFE)
+    return project, tuple(identities)
+
+
 def _verify_directories(review: RequestReview) -> None:
     """Detect home/pending redirection instead of executing against a different home."""
+    if _project_binding(review.request.project_alias, review.home) != review.project_binding:
+        raise GhostError("Reviewed project changed. No workflow action was performed.")
     with ExitStack() as stack:
         current = _open_absolute_directory(review.home)
         if current is None:
@@ -128,7 +156,8 @@ def review_action_request(request_id: str, home: Path | None = None) -> Iterator
             )
             if document.request != request:
                 raise GhostError("Pending Action Request changed before review.")
-            yield RequestReview(storage_home, home_fd, pending, original, document)
+            binding = _project_binding(request.project_alias, storage_home)
+            yield RequestReview(storage_home, home_fd, pending, original, document, binding)
     except OSError:
         raise GhostError(UNSAFE) from None
 
@@ -337,6 +366,7 @@ def apply_reviewed_request(review: RequestReview, confirmation: str) -> None:
             ) from None
 
         try:
+            _verify_directories(review)
             _dispatch(fresh.request, review.home)
         except BaseException:
             # Includes interruption: a workflow can have written before raising any exception.
