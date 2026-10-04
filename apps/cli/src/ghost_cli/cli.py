@@ -17,6 +17,7 @@ from ghost_cli.action_requests import (
     find_action_request,
     scan_action_requests,
 )
+from ghost_cli.ai import MAX_OUTPUT_TOKENS, Provider, complete_review, prepare_review
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
 from ghost_cli.demo import create_nexora_demo, render_demo_report
@@ -62,22 +63,68 @@ request_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(request_app, name="request")
+ai_app = typer.Typer(
+    help="Send sanitized project context over the network after confirmation; advisory only.",
+    no_args_is_help=True,
+)
+app.add_typer(ai_app, name="ai")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
 
 @contextmanager
-def command_errors() -> Iterator[None]:
+def command_errors(*, soft_wrap: bool = False) -> Iterator[None]:
     try:
         yield
     except GhostError as error:
-        errors.print(f"Error: {error}", style="red")
+        errors.print(f"Error: {error}", style="red", soft_wrap=soft_wrap)
         raise typer.Exit(code=1) from None
     except (OSError, RuntimeError):
         errors.print(
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+@ai_app.command("review")
+def ai_review(
+    project_alias: Annotated[str, typer.Argument(help="Registered project alias.")],
+    provider: Annotated[Provider, typer.Option("--provider", help="Explicit provider: openai.")],
+    model: Annotated[str, typer.Option("--model", help="Required bounded model identifier.")],
+    task: Annotated[str | None, typer.Option("--task", help="Focused UTF-8 review task.")] = None,
+    task_file: Annotated[
+        Path | None, typer.Option("--task-file", help="Singly linked regular UTF-8 task file.")
+    ] = None,
+    max_output_tokens: Annotated[
+        int, typer.Option("--max-output-tokens", min=1, max=MAX_OUTPUT_TOKENS)
+    ] = 1200,
+) -> None:
+    """Preview sanitized network input; confirm one OpenAI request and save an advisory draft."""
+    with command_errors(soft_wrap=True):
+        review = prepare_review(project_alias, model, task, task_file, max_output_tokens)
+        console.print(
+            f"Project: {review.project.alias}\nProvider: OpenAI ({provider.value})\n"
+            f"Model: {review.model}\nMax output tokens: {review.max_output_tokens}\n"
+            f"Total outbound UTF-8 bytes (instructions + input): {review.outbound_bytes}"
+        )
+        console.print("WARNING: This sanitized project data will leave the local machine.")
+        console.print("Output is untrusted advisory text and will not execute automatically.")
+        console.print("Exact application instructions:")
+        console.print(Text(review.instructions), soft_wrap=True)
+        console.print("Exact user input (sanitized task + context):")
+        console.print(Text(review.user_input), soft_wrap=True)
+        try:
+            confirmation = typer.prompt(
+                f"Type {review.confirmation} to confirm", default="", show_default=False,
+            )
+        except (typer.Abort, EOFError, KeyboardInterrupt):
+            console.print("Cancelled. Nothing was sent or saved.")
+            raise typer.Exit(code=1) from None
+        output, text = complete_review(review, confirmation)
+        console.print(Text(text), soft_wrap=True)
+        console.print(
+            f"Untrusted AI review draft saved: {redact_text(str(output))}", soft_wrap=True,
+        )
 
 
 @contextmanager
