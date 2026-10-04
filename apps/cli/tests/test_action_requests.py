@@ -13,7 +13,7 @@ from uuid import UUID
 import pytest
 from typer.testing import CliRunner
 
-from ghost_cli import request_execution
+from ghost_cli import local_actions, request_execution
 from ghost_cli.action_requests import (
     MAX_REQUEST_BYTES,
     MAX_REQUEST_ENTRIES,
@@ -842,10 +842,10 @@ def write_apply_request(
 def workflow_spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Mock]:
     spies = {}
     for module, name in (
-        (request_execution.sessions, "start_session"),
-        (request_execution.sessions, "add_note"),
-        (request_execution.next_steps, "create_next_summary"),
-        (request_execution.handoffs, "create_handoff"),
+        (local_actions.sessions, "start_session"),
+        (local_actions.sessions, "add_note"),
+        (local_actions.next_steps, "create_next_summary"),
+        (local_actions.handoffs, "create_handoff"),
     ):
         spies[name] = Mock()
         monkeypatch.setattr(module, name, spies[name])
