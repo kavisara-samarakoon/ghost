@@ -24,6 +24,16 @@ from ghost_cli.demo import create_nexora_demo, render_demo_report
 from ghost_cli.doctor import inspect_health
 from ghost_cli.handoffs import create_handoff
 from ghost_cli.next_steps import create_next_summary
+from ghost_cli.orchestration import (
+    MAX_LIST_LIMIT,
+    PreparedPlan,
+    prepare_plan,
+    render_plan,
+    render_run,
+    run_plan,
+    scan_runs,
+    show_run,
+)
 from ghost_cli.output_models import OutputType
 from ghost_cli.outputs import add_output, list_outputs
 from ghost_cli.paths import GhostError
@@ -68,6 +78,11 @@ ai_app = typer.Typer(
     no_args_is_help=True,
 )
 app.add_typer(ai_app, name="ai")
+orchestrate_app = typer.Typer(
+    help="Review and explicitly confirm finite sequential LOCAL workflow plans.",
+    no_args_is_help=True,
+)
+app.add_typer(orchestrate_app, name="orchestrate")
 console = Console(markup=False, highlight=False)
 errors = Console(stderr=True, markup=False, highlight=False)
 
@@ -84,6 +99,65 @@ def command_errors(*, soft_wrap: bool = False) -> Iterator[None]:
             "Error: Unable to access local storage. Check paths and permissions.", style="red"
         )
         raise typer.Exit(code=1) from None
+
+
+def display_orchestration_plan(prepared: PreparedPlan) -> None:
+    console.print(Text(render_plan(prepared)), soft_wrap=True)
+
+
+@orchestrate_app.command("preview")
+def orchestrate_preview(
+    project_alias: Annotated[str, typer.Argument(help="Registered project alias.")],
+    plan: Annotated[Path, typer.Option("--plan", help="Explicit UTF-8 JSON plan file.")],
+) -> None:
+    """Preview the sanitized execution plan without claims, audits, or workflow writes."""
+    with command_errors(soft_wrap=True):
+        display_orchestration_plan(prepare_plan(project_alias, plan))
+        console.print("Preview only. No workflow action was performed.")
+
+
+@orchestrate_app.command("run")
+def orchestrate_run(
+    project_alias: Annotated[str, typer.Argument(help="Registered project alias.")],
+    plan: Annotated[Path, typer.Option("--plan", help="Explicit UTF-8 JSON plan file.")],
+) -> None:
+    """Confirm the full plan fingerprint, then execute only the reviewed local steps."""
+    with command_errors(soft_wrap=True):
+        prepared = prepare_plan(project_alias, plan)
+        display_orchestration_plan(prepared)
+        try:
+            confirmation = typer.prompt(
+                f"Type {prepared.confirmation} to confirm", default="", show_default=False,
+            )
+        except (typer.Abort, EOFError, KeyboardInterrupt):
+            console.print("Cancelled. No workflow action was performed.")
+            raise typer.Exit(code=1) from None
+        entry = run_plan(prepared, confirmation)
+        console.print(Text(render_run(entry)), soft_wrap=True)
+
+
+@orchestrate_app.command("list")
+def orchestrate_list(
+    project: Annotated[str | None, typer.Option("--project", help="Exact project alias.")] = None,
+    limit: Annotated[int, typer.Option("--limit", min=1, max=MAX_LIST_LIMIT)] = 20,
+) -> None:
+    """List safe lifecycle metadata only; no workflow action is performed."""
+    with command_errors(soft_wrap=True):
+        result = scan_runs(project, limit)
+        if not result.runs:
+            console.print("No valid orchestration runs found.")
+        for entry in result.runs:
+            console.print(Text(render_run(entry)), soft_wrap=True)
+        console.print(f"Skipped unsafe or invalid entries: {result.skipped}.")
+
+
+@orchestrate_app.command("show")
+def orchestrate_show(
+    run_id: Annotated[str, typer.Argument(help="Exact machine-generated orchestration run ID.")],
+) -> None:
+    """Show exactly one safe run record without reading payloads or changing files."""
+    with command_errors(soft_wrap=True):
+        console.print(Text(render_run(show_run(run_id))), soft_wrap=True)
 
 
 @ai_app.command("review")

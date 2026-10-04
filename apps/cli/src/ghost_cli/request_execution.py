@@ -10,14 +10,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
-from ghost_cli import handoffs, next_steps, sessions
 from ghost_cli.action_requests import (
     MAX_REQUEST_BYTES,
     MAX_REQUEST_ENTRIES,
     ActionRequest,
-    GoalPayload,
-    HandoffPayload,
-    NotePayload,
     RequestDocument,
     _directory_flags,
     _file_flags,
@@ -28,6 +24,7 @@ from ghost_cli.action_requests import (
     scan_action_requests,
 )
 from ghost_cli.audit import serialize_event
+from ghost_cli.local_actions import dispatch_local
 from ghost_cli.paths import GhostError
 from ghost_cli.redaction import redact_text
 
@@ -258,16 +255,7 @@ def _audit_lifecycle(home_fd: int, request: ActionRequest, outcome: str) -> None
 
 def _dispatch(request: ActionRequest, home: Path) -> None:
     """Four explicit internal calls only; providers generate local handoff drafts."""
-    if request.action_type == "start_session" and isinstance(request.payload, GoalPayload):
-        sessions.start_session(request.project_alias, request.payload.goal, home=home)
-    elif request.action_type == "add_session_note" and isinstance(request.payload, NotePayload):
-        sessions.add_note(request.payload.note, request.project_alias, home=home)
-    elif request.action_type == "generate_next_steps":
-        next_steps.create_next_summary(request.project_alias, home=home)
-    elif request.action_type == "create_handoff" and isinstance(request.payload, HandoffPayload):
-        handoffs.create_handoff(request.project_alias, request.payload.provider, home=home)
-    else:
-        raise GhostError("Unsupported Action Request.")
+    dispatch_local(request.action_type, request.project_alias, request.payload, home)
 
 
 def _reject_pending_duplicate(review: RequestReview) -> None:
