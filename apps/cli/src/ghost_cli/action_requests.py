@@ -4,6 +4,7 @@ import os
 import re
 import stat
 import unicodedata
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Literal
@@ -341,13 +342,18 @@ def _open_request_directory(home: Path) -> int | None:
         os.close(parent)
 
 
-def _read_request_candidate(directory: int, name: str) -> ActionRequest | None:
-    if REQUEST_FILENAME_RE.fullmatch(name) is None:
-        return None
+@dataclass(frozen=True)
+class RequestDocument:
+    """Validated bytes and the identity observed through an open file descriptor."""
 
-    try:
-        descriptor = os.open(name, _file_flags(), dir_fd=directory)
-    except OSError:
+    request: ActionRequest
+    content: bytes
+    metadata: os.stat_result
+
+
+def _read_request_descriptor(descriptor: int, name: str) -> RequestDocument | None:
+    """Use the same bounded parser for review and a held execution descriptor."""
+    if REQUEST_FILENAME_RE.fullmatch(name) is None:
         return None
 
     try:
@@ -407,8 +413,24 @@ def _read_request_candidate(directory: int, name: str) -> ActionRequest | None:
         if request.expected_filename() != name:
             return None
 
-        return request
+        return RequestDocument(request, bytes(data), after)
 
+    except OSError:
+        return None
+
+
+def _read_request_candidate(directory: int, name: str) -> ActionRequest | None:
+    if REQUEST_FILENAME_RE.fullmatch(name) is None:
+        return None
+
+    try:
+        descriptor = os.open(name, _file_flags(), dir_fd=directory)
+    except OSError:
+        return None
+
+    try:
+        document = _read_request_descriptor(descriptor, name)
+        return document.request if document else None
     finally:
         os.close(descriptor)
 

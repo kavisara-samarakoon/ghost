@@ -2,11 +2,18 @@
 
 import json
 import os
+import stat
+from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack
 from pathlib import Path
+from threading import Barrier
+from unittest.mock import Mock
+from uuid import UUID
 
 import pytest
 from typer.testing import CliRunner
 
+from ghost_cli import request_execution
 from ghost_cli.action_requests import (
     MAX_REQUEST_BYTES,
     MAX_REQUEST_ENTRIES,
@@ -16,7 +23,10 @@ from ghost_cli.action_requests import (
     scan_action_requests,
 )
 from ghost_cli.cli import app
+from ghost_cli.config import initialize_home
 from ghost_cli.paths import GhostError
+from ghost_cli.registry import add_project
+from ghost_cli.sessions import active_sessions, start_session
 
 CREATED_AT = "2026-10-02T19:30:22.160144000Z"
 REQUEST_ID = "1790969422160144000-37850"
@@ -487,6 +497,7 @@ def test_scan_rejects_unsafe_ghost_home_override(
         (["request", "--help"], "show"),
         (["request", "list", "--help"], "Maximum pending drafts to display"),
         (["request", "show", "--help"], "request_id"),
+        (["request", "apply", "--help"], "exact confirmation phrase"),
     ],
 )
 def test_request_cli_help_never_accesses_storage(
@@ -499,6 +510,7 @@ def test_request_cli_help_never_accesses_storage(
     monkeypatch.setenv("GHOST_HOME", " ")
     monkeypatch.setattr("ghost_cli.cli.scan_action_requests", forbidden)
     monkeypatch.setattr("ghost_cli.cli.find_action_request", forbidden)
+    monkeypatch.setattr("ghost_cli.cli.review_action_request", forbidden)
     monkeypatch.setattr(Path, "home", classmethod(forbidden))
     result = runner.invoke(app, arguments)
     assert result.exit_code == 0, result.output
@@ -799,3 +811,746 @@ def test_request_cli_storage_errors_are_safe_and_read_only(
     assert str(tmp_path) not in result.output
     assert "No workflow action was performed" in result.output
     assert tree_snapshot(tmp_path) == before
+
+
+APPLY_ACTIONS = [
+    ("start_session", {"goal": "Private reviewed goal"}, "start_session"),
+    ("add_session_note", {"note": "Private reviewed note"}, "add_note"),
+    ("generate_next_steps", {}, "create_next_summary"),
+    *[("create_handoff", {"provider": provider}, "create_handoff")
+      for provider in ("codex", "chatgpt", "gemini", "antigravity")],
+]
+
+
+def write_apply_request(
+    home: Path, action: str = "generate_next_steps", payload: dict[str, object] | None = None,
+    *, request_id: str = REQUEST_ID, created_at: str = CREATED_AT,
+) -> Path:
+    home.mkdir(mode=0o700, exist_ok=True)
+    directory = home / "action-requests"
+    directory.mkdir(mode=0o700, exist_ok=True)
+    data = request(action, payload)
+    data.update(id=request_id, created_at=created_at)
+    path = directory / parse(data).expected_filename()
+    # Deliberate JSON whitespace must survive every lifecycle move byte-for-byte.
+    path.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    path.chmod(0o600)
+    return path
+
+
+@pytest.fixture
+def workflow_spies(monkeypatch: pytest.MonkeyPatch) -> dict[str, Mock]:
+    spies = {}
+    for module, name in (
+        (request_execution.sessions, "start_session"),
+        (request_execution.sessions, "add_note"),
+        (request_execution.next_steps, "create_next_summary"),
+        (request_execution.handoffs, "create_handoff"),
+    ):
+        spies[name] = Mock()
+        monkeypatch.setattr(module, name, spies[name])
+    return spies
+
+
+def assert_no_dispatch(spies: dict[str, Mock]) -> None:
+    assert all(spy.call_count == 0 for spy in spies.values())
+
+
+def apply_confirmed(request_id: str = REQUEST_ID) -> None:
+    with request_execution.review_action_request(request_id) as review:
+        request_execution.apply_reviewed_request(review, f"APPLY {request_id}")
+
+
+@pytest.mark.parametrize(("action", "payload", "function"), APPLY_ACTIONS)
+def test_apply_exact_confirmation_dispatches_only_matching_workflow(
+    action: str, payload: dict[str, object], function: str,
+    runner: CliRunner, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home, action, payload)
+    original = path.read_bytes()
+    identity = path.stat().st_ino
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 0, result.output
+    for value in (REQUEST_ID, CREATED_AT, "example", action, "pending",
+                  parse(request(action, payload)).preview_body, SAFETY_NOTICE):
+        assert value in result.output
+        assert result.output.index(value) < result.output.index("Type APPLY")
+    assert "completed" in result.output
+    expected_args = {
+        "start_session": ("example", payload.get("goal")),
+        "add_note": (payload.get("note"), "example"),
+        "create_next_summary": ("example",),
+        "create_handoff": ("example", payload.get("provider")),
+    }
+    workflow_spies[function].assert_called_once_with(*expected_args[function], home=isolated_home)
+    assert all(spy.call_count == 0 for name, spy in workflow_spies.items() if name != function)
+    assert not path.exists()
+    completed = list((isolated_home / request_execution.COMPLETED).glob("*.json"))
+    assert len(completed) == 1
+    assert completed[0].read_bytes() == original
+    assert completed[0].stat().st_ino == identity
+    assert json.loads(original)["status"] == "pending"
+    assert json.loads(completed[0].read_bytes())["status"] == "pending"
+    assert not list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+    assert (isolated_home / request_execution.CLAIMS / f"{REQUEST_ID}.claim").is_file()
+    for directory in ("action-requests", request_execution.CLAIMS, request_execution.COMPLETED,
+                      request_execution.FAILED):
+        assert stat.S_IMODE((isolated_home / directory).stat().st_mode) == 0o700
+        for artifact in (isolated_home / directory).iterdir():
+            assert stat.S_IMODE(artifact.stat().st_mode) == 0o600
+    audit_path = isolated_home / request_execution.EXECUTION_AUDIT
+    assert stat.S_IMODE(audit_path.stat().st_mode) == 0o600
+    audit = [json.loads(line) for line in audit_path.read_text().splitlines()]
+    assert [event["metadata"]["outcome"] for event in audit] == ["claimed", "completed"]
+    for event in audit:
+        assert set(event["metadata"]) == {"request_id", "action_type", "project_alias", "outcome"}
+        assert event["metadata"]["action_type"] == action
+    assert "Private reviewed" not in audit_path.read_text()
+    assert "goal" not in audit_path.read_text()
+    assert "note" not in audit_path.read_text().replace("add_session_note", "")
+    assert scan_action_requests().requests == ()
+
+
+@pytest.mark.parametrize("confirmation", ["", "yes", "APPLY other", f"apply {REQUEST_ID}",
+                                          f" APPLY {REQUEST_ID}", f"APPLY {REQUEST_ID} ", "\x03"])
+def test_apply_wrong_or_cancelled_confirmation_has_zero_changes(
+    confirmation: str, runner: CliRunner, isolated_home: Path,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    before = tree_snapshot(isolated_home)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=confirmation + "\n")
+    assert result.exit_code != 0, result.output
+    assert "No workflow action was performed" in result.output
+    assert tree_snapshot(isolated_home) == before
+    assert_no_dispatch(workflow_spies)
+
+
+def test_apply_eof_and_internal_wrong_confirmation_do_not_write(
+    runner: CliRunner, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    before = tree_snapshot(isolated_home)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input="")
+    assert result.exit_code != 0
+    assert "Cancelled" in result.output
+    with request_execution.review_action_request(REQUEST_ID) as review:
+        with pytest.raises(GhostError, match="Confirmation did not match"):
+            request_execution.apply_reviewed_request(review, "yes")
+    assert tree_snapshot(isolated_home) == before
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("option", ["--yes", "--force"])
+def test_apply_has_no_confirmation_bypass(
+    option: str, runner: CliRunner, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    before = tree_snapshot(isolated_home)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID, option])
+    assert result.exit_code == 2
+    assert tree_snapshot(isolated_home) == before
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("change", ["action", "payload", "alias", "timestamp", "id", "whitespace"])
+def test_apply_revalidates_valid_changes_made_during_confirmation(
+    change: str, runner: CliRunner, isolated_home: Path, monkeypatch: pytest.MonkeyPatch,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home, "start_session", {"goal": "Original reviewed goal"})
+    after_change = {}
+
+    def confirm(*args, **kwargs):
+        data = json.loads(path.read_bytes())
+        if change == "action":
+            data = request("add_session_note", {"note": "Changed reviewed note"})
+        elif change == "payload":
+            data = request("start_session", {"goal": "Changed reviewed goal"})
+        elif change == "alias":
+            data = request("start_session", {"goal": "Original reviewed goal"}, alias="other")
+        elif change == "timestamp":
+            data["created_at"] = "2026-10-03T19:30:22.160144000Z"
+        elif change == "id":
+            data["id"] = "123-456"
+        new_path = path.parent / parse(data).expected_filename()
+        path.unlink()
+        new_path.write_text(json.dumps(data))
+        new_path.chmod(0o600)
+        after_change.update(tree_snapshot(isolated_home))
+        return f"APPLY {REQUEST_ID}"
+
+    monkeypatch.setattr("ghost_cli.cli.typer.prompt", confirm)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID])
+    assert result.exit_code == 1, result.output
+    assert tree_snapshot(isolated_home) == after_change
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("change", ["malformed", "secret", "preview", "status", "notice", "symlink",
+                                   "hardlink", "directory", "fifo", "oversized", "replacement",
+                                   "invalid-utf8", "permissions", "missing"])
+def test_apply_revalidates_unsafe_or_replaced_document_after_preview(
+    change: str, isolated_home: Path, tmp_path: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    private = "private-malicious-content"
+    with request_execution.review_action_request(REQUEST_ID) as review:
+        original = path.read_bytes()
+        if change in {"symlink", "hardlink", "directory", "fifo", "replacement", "missing"}:
+            path.unlink()
+            outside = tmp_path / private
+            outside.write_bytes(original)
+            outside.chmod(0o600)
+            if change == "symlink":
+                path.symlink_to(outside)
+            elif change == "hardlink":
+                os.link(outside, path)
+            elif change == "directory":
+                path.mkdir(mode=0o700)
+            elif change == "fifo":
+                os.mkfifo(path, mode=0o600)
+            elif change == "replacement":
+                path.write_bytes(original)
+                path.chmod(0o600)
+        elif change == "malformed":
+            path.write_text(private)
+        elif change == "invalid-utf8":
+            path.write_bytes(b"\xff")
+        elif change == "oversized":
+            path.write_bytes(b"x" * (MAX_REQUEST_BYTES + 1))
+        elif change == "permissions":
+            path.chmod(0o644)
+        else:
+            data = request()
+            if change == "secret":
+                data = request("start_session", {"goal": f"api_key={private}"})
+            else:
+                data[{"preview": "preview_body", "status": "status", "notice": "safety_notice"}[
+                    change
+                ]] = private
+            path.write_text(json.dumps(data))
+        # FIFO observation must use lstat only, never read a blocking named pipe.
+        before = path.lstat() if path.exists() else None
+        with pytest.raises(GhostError) as caught:
+            request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+        assert private not in str(caught.value)
+        assert str(tmp_path) not in str(caught.value)
+        assert (path.lstat() if path.exists() else None) == before
+        assert not (isolated_home / request_execution.CLAIMS).exists()
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("after_preview", [False, True])
+def test_apply_duplicate_ids_fail_before_claim(
+    after_preview: bool, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    if after_preview:
+        with request_execution.review_action_request(REQUEST_ID) as review:
+            write_apply_request(isolated_home, created_at="2026-10-03T19:30:22.160144000Z")
+            before = tree_snapshot(isolated_home)
+            with pytest.raises(GhostError, match="Duplicate"):
+                request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+            assert tree_snapshot(isolated_home) == before
+    else:
+        write_apply_request(isolated_home, created_at="2026-10-03T19:30:22.160144000Z")
+        before = tree_snapshot(isolated_home)
+        with pytest.raises(GhostError, match="Duplicate"):
+            apply_confirmed()
+        assert tree_snapshot(isolated_home) == before
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("directory", [request_execution.CLAIMS, request_execution.COMPLETED,
+                                      request_execution.FAILED])
+@pytest.mark.parametrize("unsafe", ["symlink", "file", "permissions"])
+def test_apply_rejects_unsafe_lifecycle_directories(
+    directory: str, unsafe: str, isolated_home: Path, tmp_path: Path,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    target = isolated_home / directory
+    outside = tmp_path / "private-outside"
+    outside.mkdir(mode=0o700)
+    if unsafe == "symlink":
+        target.symlink_to(outside)
+    elif unsafe == "file":
+        target.write_text("private-content")
+    else:
+        target.mkdir(mode=0o755)
+        target.chmod(0o755)
+    with pytest.raises(GhostError) as caught:
+        apply_confirmed()
+    assert str(tmp_path) not in str(caught.value)
+    assert path.read_bytes() == original
+    assert not list(outside.iterdir())
+    assert_no_dispatch(workflow_spies)
+
+
+def test_concurrent_claims_execute_at_most_once(
+    isolated_home: Path, workflow_spies: dict[str, Mock], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    write_apply_request(isolated_home)
+    reserve = request_execution._reserve_request
+    barrier = Barrier(2)
+
+    def simultaneous_reservation(*args, **kwargs):
+        barrier.wait(timeout=10)
+        return reserve(*args, **kwargs)
+
+    monkeypatch.setattr(request_execution, "_reserve_request", simultaneous_reservation)
+    with ExitStack() as stack:
+        reviews = [stack.enter_context(request_execution.review_action_request(REQUEST_ID))
+                   for _ in range(2)]
+
+        def execute(review):
+            try:
+                request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+                return "completed"
+            except GhostError:
+                return "rejected"
+
+        with ThreadPoolExecutor(max_workers=2) as executor:
+            results = list(executor.map(execute, reviews))
+    assert sorted(results) == ["completed", "rejected"]
+    workflow_spies["create_next_summary"].assert_called_once_with("example", home=isolated_home)
+    assert scan_action_requests().requests == ()
+
+
+@pytest.mark.parametrize("recreated", [False, True])
+def test_double_apply_and_copied_pending_request_cannot_replay(
+    recreated: bool, isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    apply_confirmed()
+    if recreated:
+        write_apply_request(isolated_home, created_at="2026-10-03T19:30:22.160144000Z")
+    with pytest.raises(GhostError):
+        apply_confirmed()
+    assert workflow_spies["create_next_summary"].call_count == 1
+
+
+@pytest.mark.parametrize(
+    "failure", [GhostError, OSError, RuntimeError, KeyboardInterrupt, SystemExit],
+)
+def test_workflow_failure_never_restores_pending_or_leaks_exception(
+    failure: type[BaseException], runner: CliRunner, isolated_home: Path,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    workflow_spies["create_next_summary"].side_effect = failure("private-payload /private/path")
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert "may have made changes" in result.output
+    assert "Do not retry automatically" in result.output
+    assert "private-payload" not in result.output
+    assert "/private/path" not in result.output
+    assert not path.exists()
+    failed = list((isolated_home / request_execution.FAILED).glob("*.json"))
+    assert len(failed) == 1 and failed[0].read_bytes() == original
+    with pytest.raises(GhostError):
+        apply_confirmed()
+    assert workflow_spies["create_next_summary"].call_count == 1
+
+
+@pytest.mark.parametrize("failure_point", ["finalization", "terminal-audit", "claimed-audit"])
+@pytest.mark.parametrize("workflow_fails", [False, True])
+def test_lifecycle_failure_keeps_request_nonreplayable(
+    failure_point: str, workflow_fails: bool, isolated_home: Path, runner: CliRunner,
+    workflow_spies: dict[str, Mock], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    if workflow_fails:
+        workflow_spies["create_next_summary"].side_effect = GhostError("private-partial-result")
+    audit = request_execution._audit_lifecycle
+
+    def fail(*args, **kwargs):
+        raise OSError("private-storage-path")
+
+    def fail_audit(home, request, outcome):
+        if outcome == "claimed" and failure_point == "claimed-audit":
+            fail()
+        if outcome != "claimed" and failure_point == "terminal-audit":
+            fail()
+        audit(home, request, outcome)
+
+    if failure_point == "finalization":
+        monkeypatch.setattr(request_execution, "_finalize", fail)
+    else:
+        monkeypatch.setattr(request_execution, "_audit_lifecycle", fail_audit)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert "Do not retry automatically" in result.output
+    assert "private-" not in result.output
+    assert not path.exists()
+    if failure_point != "claimed-audit" and not workflow_fails:
+        assert "Workflow completed" in result.output
+    copies = [artifact for directory in (request_execution.CLAIMS, request_execution.COMPLETED,
+                                        request_execution.FAILED)
+              for artifact in (isolated_home / directory).glob("*.json")]
+    assert len(copies) == 1 and copies[0].read_bytes() == original
+    expected_calls = 0 if failure_point == "claimed-audit" else 1
+    assert workflow_spies["create_next_summary"].call_count == expected_calls
+    write_apply_request(isolated_home)
+    with pytest.raises(GhostError):
+        apply_confirmed()
+    assert workflow_spies["create_next_summary"].call_count == expected_calls
+
+
+@pytest.mark.parametrize(("action", "payload", "function"), APPLY_ACTIONS)
+def test_apply_uses_real_workflows_and_preserves_domain_audits_without_external_execution(
+    action: str, payload: dict[str, object], function: str, isolated_home: Path,
+    tmp_path: Path, runner: CliRunner, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    initialize_home()
+    root = tmp_path / "project"
+    root.mkdir()
+    add_project("example", root)
+    if action == "add_session_note":
+        start_session("example", "Setup active session")
+    path = write_apply_request(isolated_home, action, payload)
+    original = path.read_bytes()
+    before_audit = (isolated_home / "audit.jsonl").read_text().splitlines()
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Confirmed workflows must not execute processes or network calls")
+
+    for target in ("subprocess.run", "subprocess.Popen", "subprocess.call", "os.system", "os.popen",
+                   "socket.create_connection", "socket.socket"):
+        monkeypatch.setattr(target, forbidden)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 0, result.output
+    after_audit = (isolated_home / "audit.jsonl").read_text().splitlines()
+    assert len(after_audit) == len(before_audit) + 1
+    expected_event = {
+        "start_session": "session.started", "add_note": "session.note.added",
+        "create_next_summary": "next.summary.created", "create_handoff": "handoff.created",
+    }
+    assert json.loads(after_audit[-1])["event"] == expected_event[function]
+    assert "Private reviewed" not in "\n".join(after_audit)
+    if action == "start_session":
+        assert active_sessions("example")[0].goal == payload["goal"]
+    elif action == "add_session_note":
+        session = active_sessions("example")[0]
+        assert session.notes_count == 1
+        assert payload["note"] in (root / ".ghost/sessions" / session.id / "notes.md").read_text()
+    else:
+        directory = (root / ".ghost/drafts/next-steps" if action == "generate_next_steps"
+                     else root / ".ghost/drafts/handoffs" / str(payload["provider"]))
+        assert len(list(directory.glob("*.md"))) == 1
+    completed = list((isolated_home / request_execution.COMPLETED).glob("*.json"))
+    assert len(completed) == 1 and completed[0].read_bytes() == original
+    before = tree_snapshot(tmp_path)
+    for arguments in (["request", "list"], ["request", "show", REQUEST_ID]):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code == (0 if arguments[1] == "list" else 1)
+        assert "No workflow action was performed" in result.output
+        assert tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize(("action", "payload", "function"), APPLY_ACTIONS[:4])
+def test_real_domain_audit_failure_after_primary_write_cannot_replay(
+    action: str, payload: dict[str, object], function: str, isolated_home: Path,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, runner: CliRunner,
+) -> None:
+    initialize_home()
+    root = tmp_path / "project"
+    root.mkdir()
+    add_project("example", root)
+    if action == "add_session_note":
+        start_session("example", "Setup active session")
+    path = write_apply_request(isolated_home, action, payload)
+    original = path.read_bytes()
+
+    def audit_failure(*args, **kwargs):
+        raise OSError("private audit path and private body")
+
+    target = ("ghost_cli.sessions.append_event" if action in {"start_session", "add_session_note"}
+              else "ghost_cli.next_steps.append_event" if action == "generate_next_steps"
+              else "ghost_cli.context_pack.append_event")
+    monkeypatch.setattr(target, audit_failure)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert "may have made changes" in result.output
+    assert "Do not retry automatically" in result.output
+    assert "private audit" not in result.output
+    assert not path.exists()
+    failed = list((isolated_home / request_execution.FAILED).glob("*.json"))
+    assert len(failed) == 1 and failed[0].read_bytes() == original
+    if action == "start_session":
+        assert active_sessions("example")[0].goal == payload["goal"]
+    elif action == "add_session_note":
+        assert active_sessions("example")[0].notes_count == 1
+    else:
+        assert list((root / ".ghost/drafts").rglob("*.md"))
+    before = tree_snapshot(tmp_path)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert tree_snapshot(tmp_path) == before
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "directory", "fifo", "oversized",
+                                   "permissions", "home-permissions", "pending-permissions"])
+def test_apply_rejects_initial_unsafe_storage_without_confirmation_or_writes(
+    unsafe: str, isolated_home: Path, tmp_path: Path, runner: CliRunner,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    if unsafe in {"symlink", "hardlink", "directory", "fifo"}:
+        path.unlink()
+        outside = tmp_path / "private-outside"
+        outside.write_bytes(original)
+        outside.chmod(0o600)
+        if unsafe == "symlink":
+            path.symlink_to(outside)
+        elif unsafe == "hardlink":
+            os.link(outside, path)
+        elif unsafe == "directory":
+            path.mkdir(mode=0o700)
+        else:
+            os.mkfifo(path, mode=0o600)
+    elif unsafe == "oversized":
+        path.write_bytes(b"x" * (MAX_REQUEST_BYTES + 1))
+    elif unsafe == "permissions":
+        path.chmod(0o644)
+    elif unsafe == "home-permissions":
+        isolated_home.chmod(0o755)
+    else:
+        path.parent.chmod(0o755)
+    before = tree_snapshot(tmp_path)
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert "Type APPLY" not in result.output
+    assert "private-outside" not in result.output
+    assert str(tmp_path) not in result.output
+    assert tree_snapshot(tmp_path) == before
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("unsafe", ["symlink", "hardlink", "directory", "fifo", "oversized",
+                                   "permissions"])
+def test_unsafe_execution_audit_target_prevents_workflow_dispatch(
+    unsafe: str, isolated_home: Path, tmp_path: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    target = isolated_home / request_execution.EXECUTION_AUDIT
+    outside = tmp_path / "private-audit"
+    outside.write_text("private audit content")
+    outside.chmod(0o600)
+    if unsafe == "symlink":
+        target.symlink_to(outside)
+    elif unsafe == "hardlink":
+        os.link(outside, target)
+    elif unsafe == "directory":
+        target.mkdir(mode=0o700)
+    elif unsafe == "fifo":
+        os.mkfifo(target, mode=0o600)
+    else:
+        target.write_bytes(b"x" * MAX_REQUEST_BYTES if unsafe == "oversized" else b"private audit")
+        target.chmod(0o644 if unsafe == "permissions" else 0o600)
+    with pytest.raises(GhostError, match="claim is retained"):
+        apply_confirmed()
+    assert_no_dispatch(workflow_spies)
+    assert outside.read_text() == "private audit content"
+    assert not path.exists()
+    claimed = list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+    assert len(claimed) == 1 and claimed[0].read_bytes() == original
+
+
+def test_request_replaced_between_revalidation_and_move_never_dispatches(
+    isolated_home: Path, workflow_spies: dict[str, Mock], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    real_move = request_execution._exclusive_rename()
+
+    def changed_move(source, name, destination, target):
+        replacement = path.parent / "replacement.tmp"
+        replacement.write_bytes(original)
+        replacement.chmod(0o600)
+        replacement.replace(path)
+        real_move(source, name, destination, target)
+
+    monkeypatch.setattr(request_execution, "_exclusive_rename", lambda: changed_move)
+    with pytest.raises(GhostError, match="claim is retained"):
+        apply_confirmed()
+    assert_no_dispatch(workflow_spies)
+    assert not path.exists()
+    claimed = list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+    assert claimed[0].read_bytes() == original
+
+
+@pytest.mark.parametrize("tamper", ["request", "claims-directory", "reservation", "duplicate"])
+def test_post_claim_tampering_before_dispatch_is_detected(
+    tamper: str, isolated_home: Path, workflow_spies: dict[str, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_apply_request(isolated_home)
+    real_audit = request_execution._audit_lifecycle
+
+    def tamper_after_claim(home, draft, outcome):
+        real_audit(home, draft, outcome)
+        claims = isolated_home / request_execution.CLAIMS
+        if tamper == "request":
+            claimed = list(claims.glob("*.json"))[0]
+            claimed.write_text(json.dumps(request("start_session", {"goal": "Changed"})))
+        elif tamper == "claims-directory":
+            claims.rename(isolated_home / "detached-claims")
+            claims.mkdir(mode=0o700)
+        elif tamper == "reservation":
+            (claims / f"{REQUEST_ID}.claim").unlink()
+        else:
+            write_apply_request(isolated_home, created_at="2026-10-03T19:30:22.160144000Z")
+
+    monkeypatch.setattr(request_execution, "_audit_lifecycle", tamper_after_claim)
+    with pytest.raises(GhostError, match="claim is retained"):
+        apply_confirmed()
+    assert_no_dispatch(workflow_spies)
+    if tamper != "duplicate":
+        assert not path.exists()
+
+
+def test_exclusive_native_move_never_overwrites_an_existing_target(tmp_path: Path) -> None:
+    source, destination = tmp_path / "source", tmp_path / "destination"
+    source.mkdir(mode=0o700)
+    destination.mkdir(mode=0o700)
+    (source / "request.json").write_text("reviewed document")
+    (destination / "request.json").write_text("existing artifact")
+    with ExitStack() as stack:
+        descriptors = [
+            os.open(path, os.O_RDONLY | os.O_DIRECTORY) for path in (source, destination)
+        ]
+        for descriptor in descriptors:
+            stack.callback(os.close, descriptor)
+        with pytest.raises(OSError):
+            request_execution._exclusive_rename()(descriptors[0], "request.json",
+                                                  descriptors[1], "request.json")
+    assert (source / "request.json").read_text() == "reviewed document"
+    assert (destination / "request.json").read_text() == "existing artifact"
+
+
+@pytest.mark.parametrize("override", ["relative", "tilde"])
+def test_apply_freezes_the_m31_home_override_through_confirmation(
+    override: str, isolated_home: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    workflow_spies: dict[str, Mock],
+) -> None:
+    home = isolated_home if override == "relative" else tmp_path / "user-home"
+    write_apply_request(home)
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("GHOST_HOME", home.name if override == "relative" else "~")
+    with request_execution.review_action_request(REQUEST_ID) as review:
+        monkeypatch.setenv("GHOST_HOME", str(tmp_path / "changed-home"))
+        request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+    workflow_spies["create_next_summary"].assert_called_once_with("example", home=home)
+    assert not (tmp_path / "changed-home").exists()
+
+
+def test_replaced_home_after_preview_is_rejected_before_writes(
+    isolated_home: Path, tmp_path: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    write_apply_request(isolated_home)
+    with request_execution.review_action_request(REQUEST_ID) as review:
+        isolated_home.rename(tmp_path / "old-home")
+        write_apply_request(isolated_home)
+        before = tree_snapshot(tmp_path)
+        with pytest.raises(GhostError):
+            request_execution.apply_reviewed_request(review, f"APPLY {REQUEST_ID}")
+        assert tree_snapshot(tmp_path) == before
+    assert_no_dispatch(workflow_spies)
+
+
+@pytest.mark.parametrize("directory", [request_execution.CLAIMS, request_execution.COMPLETED])
+def test_lifecycle_name_collisions_preserve_existing_artifacts_and_block_replay(
+    directory: str, isolated_home: Path, workflow_spies: dict[str, Mock],
+    monkeypatch: pytest.MonkeyPatch, runner: CliRunner,
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    fixed_uuid = UUID(int=1)
+    monkeypatch.setattr(request_execution, "uuid4", lambda: fixed_uuid)
+    target_directory = isolated_home / directory
+    target_directory.mkdir(mode=0o700)
+    collision = target_directory / f"{REQUEST_ID}-{fixed_uuid.hex}.json"
+    collision.write_text("existing lifecycle artifact")
+    collision.chmod(0o600)
+    before = collision.stat()
+    result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
+    assert result.exit_code == 1
+    assert "Do not retry automatically" in result.output
+    assert collision.read_text() == "existing lifecycle artifact"
+    assert collision.stat() == before
+    expected_calls = 0 if directory == request_execution.CLAIMS else 1
+    assert workflow_spies["create_next_summary"].call_count == expected_calls
+    if directory == request_execution.CLAIMS:
+        assert path.read_bytes() == original
+    else:
+        assert "Workflow completed" in result.output
+        assert not path.exists()
+        claimed = list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+        assert len(claimed) == 1 and claimed[0].read_bytes() == original
+        write_apply_request(isolated_home)
+    with pytest.raises(GhostError, match="already been claimed"):
+        apply_confirmed()
+    assert workflow_spies["create_next_summary"].call_count == expected_calls
+
+
+@pytest.mark.parametrize("interrupt", [KeyboardInterrupt, SystemExit])
+def test_interruption_after_durable_claim_before_dispatch_cannot_replay(
+    interrupt: type[BaseException], isolated_home: Path, workflow_spies: dict[str, Mock],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+
+    def interrupted(*args, **kwargs):
+        raise interrupt("private interruption")
+
+    monkeypatch.setattr(request_execution, "_audit_lifecycle", interrupted)
+    with pytest.raises(GhostError, match="claim is retained"):
+        apply_confirmed()
+    assert_no_dispatch(workflow_spies)
+    assert not path.exists()
+    claimed = list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+    assert len(claimed) == 1 and claimed[0].read_bytes() == original
+    write_apply_request(isolated_home)
+    with pytest.raises(GhostError, match="already been claimed"):
+        apply_confirmed()
+    assert_no_dispatch(workflow_spies)
+
+
+def test_changed_terminal_directory_permissions_leave_claim_nonreplayable(
+    isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    original = path.read_bytes()
+    workflow_spies["create_next_summary"].side_effect = lambda *args, **kwargs: (
+        isolated_home / request_execution.COMPLETED
+    ).chmod(0o755)
+    with pytest.raises(GhostError, match="Workflow completed"):
+        apply_confirmed()
+    assert not path.exists()
+    claimed = list((isolated_home / request_execution.CLAIMS).glob("*.json"))
+    assert len(claimed) == 1 and claimed[0].read_bytes() == original
+    assert workflow_spies["create_next_summary"].call_count == 1
+    with pytest.raises(GhostError):
+        apply_confirmed()
+    assert workflow_spies["create_next_summary"].call_count == 1
+
+
+def test_secret_looking_alias_is_redacted_in_request_execution_audit(
+    isolated_home: Path, workflow_spies: dict[str, Mock],
+) -> None:
+    path = write_apply_request(isolated_home)
+    data = request(alias="sk-abcdefgh12345")
+    path.write_text(json.dumps(data))
+    apply_confirmed()
+    audit = (isolated_home / request_execution.EXECUTION_AUDIT).read_text()
+    assert "sk-abcdefgh12345" not in audit
+    assert "[REDACTED]" in audit
+    assert workflow_spies["create_next_summary"].call_count == 1
