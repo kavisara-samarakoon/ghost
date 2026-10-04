@@ -11,7 +11,12 @@ from rich.table import Table
 from rich.text import Text
 
 from ghost_cli import __version__
-from ghost_cli.action_requests import MAX_REQUEST_ENTRIES, find_action_request, scan_action_requests
+from ghost_cli.action_requests import (
+    MAX_REQUEST_ENTRIES,
+    ActionRequest,
+    find_action_request,
+    scan_action_requests,
+)
 from ghost_cli.config import initialize_home
 from ghost_cli.context_pack import create_context_pack
 from ghost_cli.demo import create_nexora_demo, render_demo_report
@@ -23,6 +28,7 @@ from ghost_cli.outputs import add_output, list_outputs
 from ghost_cli.paths import GhostError
 from ghost_cli.redaction import redact_text
 from ghost_cli.registry import add_project, find_project, load_registry
+from ghost_cli.request_execution import apply_reviewed_request, review_action_request
 from ghost_cli.sessions import active_sessions, add_note, close_session, start_session
 from ghost_cli.update_packs import create_update_pack
 
@@ -52,7 +58,7 @@ demo_app = typer.Typer(
 )
 app.add_typer(demo_app, name="demo")
 request_app = typer.Typer(
-    help="Review pending desktop Action Request drafts without performing workflow actions.",
+    help="Review desktop Action Requests or explicitly confirm a supported local action.",
     no_args_is_help=True,
 )
 app.add_typer(request_app, name="request")
@@ -124,23 +130,47 @@ def request_show(
     """Show one validated pending draft and its reviewed preview without changing storage."""
     with request_review():
         request = find_action_request(request_id)
-        table = Table(title="GHOST Action Request", show_header=False)
-        table.add_column("Field", style="cyan")
-        table.add_column("Value", overflow="fold")
-        for label, value in (
-            ("Request ID", request.id),
-            ("Created (UTC)", request.created_at),
-            ("Project alias", request.project_alias),
-            ("Action", request.action_type),
-            ("Status", request.status),
-        ):
-            table.add_row(label, Text(value))
-        console.print(table)
-        console.print("Reviewed preview", style="bold")
-        console.print(Text(request.preview_title), soft_wrap=True)
-        console.print(Text(request.preview_body), soft_wrap=True)
-        console.print("Safety notice", style="bold")
-        console.print(Text(request.safety_notice), soft_wrap=True)
+        display_action_request(request)
+
+
+def display_action_request(request: ActionRequest) -> None:
+    """Render the validated preview identically for read-only show and confirmed apply."""
+    table = Table(title="GHOST Action Request", show_header=False)
+    table.add_column("Field", style="cyan")
+    table.add_column("Value", overflow="fold")
+    for label, value in (
+        ("Request ID", request.id),
+        ("Created (UTC)", request.created_at),
+        ("Project alias", request.project_alias),
+        ("Action", request.action_type),
+        ("Status", request.status),
+    ):
+        table.add_row(label, Text(value))
+    console.print(table)
+    console.print("Reviewed preview", style="bold")
+    console.print(Text(request.preview_title), soft_wrap=True)
+    console.print(Text(request.preview_body), soft_wrap=True)
+    console.print("Safety notice", style="bold")
+    console.print(Text(request.safety_notice), soft_wrap=True)
+
+
+@request_app.command("apply")
+def request_apply(
+    request_id: Annotated[str, typer.Argument(help="Exact pending desktop Action Request ID.")],
+) -> None:
+    """Apply one reviewed local action only after an exact confirmation phrase."""
+    with command_errors(), review_action_request(request_id) as review:
+        display_action_request(review.request)
+        console.print("Applying this draft can write local workflow files and audit events.")
+        try:
+            confirmation = typer.prompt(
+                f"Type APPLY {review.request.id} to confirm", default="", show_default=False,
+            )
+        except (typer.Abort, EOFError, KeyboardInterrupt):
+            console.print("Cancelled. No workflow action was performed.")
+            raise typer.Exit(code=1) from None
+        apply_reviewed_request(review, confirmation)
+        console.print(f"Action Request {review.request.id} completed.")
 
 
 @app.command("version")

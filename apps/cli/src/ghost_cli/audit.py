@@ -28,14 +28,19 @@ def redact_metadata(value: Any) -> Any:
     return value
 
 
-def append_event(path: Path, event: str, metadata: Mapping[str, Any] | None = None) -> None:
+def serialize_event(event: str, metadata: Mapping[str, Any] | None = None) -> str:
+    """Share the audit schema/redaction with secure descriptor-relative writers."""
     record = {
         "timestamp": utc_now().isoformat(),
         "event": event,
         "metadata": redact_metadata(metadata if metadata is not None else {}),
     }
+    return json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+
+
+def append_event(path: Path, event: str, metadata: Mapping[str, Any] | None = None) -> None:
     # Serialize before opening the file: unsupported values cannot leave a partial line.
-    line = json.dumps(record, ensure_ascii=False, allow_nan=False) + "\n"
+    line = serialize_event(event, metadata)
     check_regular_file(path)
     descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     with os.fdopen(descriptor, "a", encoding="utf-8") as stream:
