@@ -1,8 +1,8 @@
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { browserVoiceEnvironment, VoiceController, type VoiceState } from "./voice-transcription.ts";
 
-export function VoiceView({ state, onStart, onStop, onSend, onDiscard }: {
-  state: VoiceState; onStart: () => void; onStop: () => void; onSend: () => void; onDiscard: () => void;
+export function VoiceView({ state, onStart, onStop, onSend, onDiscard, onUseTranscript }: {
+  state: VoiceState; onStart: () => void; onStop: () => void; onSend: () => void; onDiscard: () => void; onUseTranscript?: (text: string) => void;
 }) {
   const clip = state.recording;
   return <section className="glass-panel voice-input" aria-labelledby="voice-input-title">
@@ -25,22 +25,23 @@ export function VoiceView({ state, onStart, onStop, onSend, onDiscard }: {
       <textarea id="voice-transcript" readOnly value={state.result.text} rows={7} />
       <p>Transcript only — no workflow action was performed.</p>
       <div className="hero-buttons"><button type="button" className="btn-primary" onClick={onStart}>Record another clip</button>
-        <button type="button" className="btn-secondary" onClick={onDiscard}>Discard transcript</button></div></div>}
+        <button type="button" className="btn-secondary" onClick={onDiscard}>Discard transcript</button>
+        {onUseTranscript && <button type="button" className="btn-secondary" onClick={() => onUseTranscript(state.result!.text)}>Use transcript as intent</button>}</div></div>}
     {state.message && <p className="voice-feedback" role="status">{state.message}</p>}
   </section>;
 }
 
-export default function VoiceInput() {
+export default function VoiceInput({ onUseTranscript }: { onUseTranscript?: (text: string) => void }) {
   const [controller, setController] = useState<VoiceController | null>(null);
   useEffect(() => {
     const instance = new VoiceController(browserVoiceEnvironment());
     setController(instance);
     return () => instance.dispose();
   }, []);
-  return controller ? <VoiceConnected controller={controller} /> : <section className="glass-panel voice-input"><h2>Voice Input</h2><p>Checking local microphone support…</p></section>;
+  return controller ? <VoiceConnected controller={controller} onUseTranscript={onUseTranscript} /> : <section className="glass-panel voice-input"><h2>Voice Input</h2><p>Checking local microphone support…</p></section>;
 }
-function VoiceConnected({ controller }: { controller: VoiceController }) {
+function VoiceConnected({ controller, onUseTranscript }: { controller: VoiceController; onUseTranscript?: (text: string) => void }) {
   const state = useSyncExternalStore(controller.subscribe, controller.getState);
   return <VoiceView state={state} onStart={() => { void controller.start(); }} onStop={() => controller.stop()}
-    onSend={() => { void controller.send(); }} onDiscard={() => controller.discard()} />;
+    onSend={() => { void controller.send(); }} onDiscard={() => controller.discard()} onUseTranscript={onUseTranscript} />;
 }

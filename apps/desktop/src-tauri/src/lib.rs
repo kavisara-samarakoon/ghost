@@ -1,6 +1,42 @@
+mod intent;
 mod snapshot;
 mod voice;
 use snapshot::actions::{Action, ActionState};
+
+#[tauri::command(rename_all = "snake_case")]
+fn prepare_ghost_intent(
+    window: tauri::WebviewWindow,
+    project_alias: String,
+    intent: String,
+) -> Result<intent::PreparedIntent, &'static str> {
+    intent::prepare(window.label(), project_alias, intent)
+}
+#[tauri::command(rename_all = "snake_case")]
+async fn interpret_ghost_intent(
+    window: tauri::WebviewWindow,
+    prepared: intent::PreparedIntent,
+    confirmed: Option<bool>,
+) -> Result<intent::IntentResult, &'static str> {
+    intent::validate_review(window.label(), &prepared, confirmed)?;
+    let lease = intent::IntentLease::acquire()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _lease = lease;
+        intent::interpret_from_environment(prepared, confirmed)
+    })
+    .await
+    .map_err(|_| "transport")?
+}
+#[tauri::command(rename_all = "snake_case")]
+async fn save_ghost_intent_plan(
+    window: tauri::WebviewWindow,
+    proposal: intent::IntentResult,
+    confirmed: Option<bool>,
+) -> Result<intent::SavedPlan, &'static str> {
+    intent::validate_save(window.label(), &proposal, confirmed)?;
+    tauri::async_runtime::spawn_blocking(move || intent::save_from_environment(proposal, confirmed))
+        .await
+        .map_err(|_| "save")?
+}
 
 #[tauri::command]
 async fn transcribe_ghost_voice(
@@ -114,7 +150,10 @@ pub fn run() {
             search_ghost_memory,
             prepare_ghost_action_request,
             save_ghost_action_request,
-            transcribe_ghost_voice
+            transcribe_ghost_voice,
+            prepare_ghost_intent,
+            interpret_ghost_intent,
+            save_ghost_intent_plan
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

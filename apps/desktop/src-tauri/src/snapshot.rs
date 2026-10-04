@@ -6,7 +6,7 @@ mod reader;
 pub mod requests;
 pub mod search;
 mod session;
-mod text;
+pub(crate) mod text;
 
 use reader::{Directory, ReadBudget};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};

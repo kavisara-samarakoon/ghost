@@ -164,8 +164,8 @@ test("changing project selection cannot change the captured recording or Send pa
   selectedProject = "another-project"; assert.equal(selectedProject, "another-project");
   await f.controller.send(); assert.equal(f.sent[0], reviewed);
   assert.deepEqual(new Uint8Array(await f.sent[0].blob.arrayBuffer()), new Uint8Array([1, 2, 3]));
-  const source = readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8");
-  assert.match(source, /<VoiceInput \/>/); // no alias prop or selection-dependent key
+  const source = readFileSync(new URL("../src/IntentInterpreter.tsx", import.meta.url), "utf8");
+  assert.match(source, /<VoiceInput onUseTranscript=/); // no alias prop or selection-dependent key
 });
 test("capture construction/start failures, unsupported actual format, and object URL failure stop tracks", async () => {
   for (const failure of ["start", "format", "url"]) {

@@ -5,7 +5,7 @@ import { sampleProjects } from "./preview-projects";
 import ghostLogo from "./assets/brand/ghost-logo.png";
 import "./App.css";
 import ActionRequests from "./ActionRequests";
-import VoiceInput from "./VoiceInput";
+import { ControlledIntentWorkspace } from "./IntentInterpreter";
 
 /**
  * GHOST Command Space — Hero-style command center layout.
@@ -220,7 +220,7 @@ export function CommandPage({ projects, project, mode, notice, warnings, onSelec
       </div>
 
       <ActionRequests projects={projects} project={project} available={!preview} recent={recentRequests} onSaved={onRequestSaved} />
-      <VoiceInput />
+      <ControlledIntentWorkspace projectAlias={project?.alias || ""} available={!preview} />
 
       <div className="command-guidance-grid">
         <section className="glass-panel command-safety" aria-labelledby="command-safety-title">
