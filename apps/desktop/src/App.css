@@ -3615,6 +3615,17 @@
   }
 }
 /* M29: local request preparation and explicit review. */
+.voice-input { padding: 28px; margin-top: 24px; }
+.voice-input > p, .voice-review p, .voice-transcript p { color: var(--text-secondary, #a8b3c7); line-height: 1.65; }
+.voice-recording { margin-top: 20px; }
+.voice-recording-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #e99393; margin-right: 8px; }
+.voice-review, .voice-transcript { margin-top: 24px; }
+.voice-review audio { width: 100%; max-width: 460px; color-scheme: dark; }
+.voice-transcript label { display: block; margin-bottom: 10px; }
+.voice-transcript textarea { box-sizing: border-box; width: 100%; background: #0b1421; color: #e9f0f8; border: 1px solid rgba(139, 170, 194, .25); border-radius: 10px; padding: 14px; font: inherit; resize: vertical; }
+.voice-input :focus-visible { outline: 2px solid #67d6ec; outline-offset: 3px; }
+.voice-input :disabled { opacity: .5; cursor: not-allowed; }
+.voice-feedback { padding-top: 12px; }
 .action-requests { padding: 28px; margin-top: 24px; }
 .action-requests > p, .request-review p { color: var(--text-secondary, #a8b3c7); line-height: 1.65; }
 .action-requests fieldset { border: 0; padding: 0; margin: 22px 0; min-width: 0; }
