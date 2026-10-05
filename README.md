@@ -13,7 +13,7 @@ macOS desktop companion. The CLI manages local workflow records. The desktop
 reviews approved local data and can save pending Action Requests and inert intent
 plan drafts. Neither desktop path executes a workflow.
 
-Current unreleased capabilities through M36 include exact-confirmed CLI request
+Current source capabilities through M37 include exact-confirmed CLI request
 execution (M32), advisory OpenAI review (M33), exact-SHA-confirmed finite local
 orchestration (M34), reviewed voice transcription (M35), and proposal-only intent
 interpretation (M36). AI never owns execution authority. The desktop never invokes
@@ -21,23 +21,29 @@ the CLI, shell, Git/GitHub, or release operations.
 
 ## Release status
 
-The published/version baseline is **v0.4.0-alpha — Safe Desktop Action Requests**
-(desktop `0.4.0-alpha`, CLI `0.4.0a0`). Its
-[release notes](docs/release-v0.4.0-alpha.md) describe that historical checkpoint,
-not the subsequent unreleased M31–M36 capabilities. The image above is historical
-v0.3.0-alpha artwork. M37 does not select a new version or publish a release.
+Current source version: **v0.5.0-alpha — Controlled AI, Voice & Safe Orchestration**
+(desktop `0.5.0-alpha`, CLI `0.5.0a0`). The
+[release preparation notes](docs/release-v0.5.0-alpha.md) cover M31–M37.
+Publication of v0.5.0-alpha is a separate reviewed operation.
 
-This remains an alpha project. Apple Developer signing, notarization, live-provider
-verification, and operational review are separate release prerequisites; local
-validation alone does not establish production readiness.
+Previous published checkpoint: **v0.4.0-alpha — Safe Desktop Action Requests**.
+Its [release notes](docs/release-v0.4.0-alpha.md) describe that historical scope.
+The image above is historical v0.3.0-alpha artwork. Published assets are listed
+under GitHub Releases; local v0.5 candidates are not published assets.
+
+This remains an alpha project for controlled local dogfooding/testing. Trusted
+public macOS distribution requires Developer ID signing and notarization.
+Live-provider validation is required for production claims; an unsigned alpha
+prerelease requires explicit owner acceptance of the disclosed limitations at the
+later release gate. Local validation alone does not establish production readiness.
 
 ## Download and install GHOST desktop
 
 Use [GitHub Releases](https://github.com/kavisara-samarakoon/ghost/releases) for
 published assets and their release-specific checksum and installation instructions.
 Compare the downloaded DMG's `shasum -a 256` result with that release's checksum;
-local M37 bundles are validation artifacts, not published assets. The current
-baseline targets Apple Silicon. Unsigned/not-notarized builds have macOS
+local M38 bundles are candidate validation artifacts. The current candidate
+targets Apple Silicon. Builds without Developer ID signing/notarization have macOS
 Gatekeeper limitations; no GHOST setting bypasses macOS security.
 
 ## CLI setup from source

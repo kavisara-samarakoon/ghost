@@ -1,7 +1,7 @@
 # GHOST CLI
 
 GitHub, Handoff, Operations, Search, and Tracking: a local-first personal AI
-workflow coordinator for Kavisara Samarakoon. The current unreleased CLI includes
+workflow coordinator for Kavisara Samarakoon. The current source CLI includes
 local projects/sessions/drafts, read-only pending Action Request inspection (M31),
 exact-confirmed request execution (M32), controlled advisory AI review (M33), and
 finite confirmed local orchestration (M34). It never executes shell commands or
@@ -39,16 +39,17 @@ from the repository root if the environment is not activated:
 
 ## Version and release checkpoint
 
-`ghost version` prints `GHOST 0.4.0a0` and exits 0. Version and help commands work
+`ghost version` prints `GHOST 0.5.0a0` and exits 0. Version and help commands work
 without initialization and do not resolve, read, or create workflow storage.
 The version's single source is the literal `__version__` in
 `src/ghost_cli/__init__.py`; setuptools reads it when building package metadata.
 There is no runtime Git lookup, configuration read, or network version check.
 When changing that value, rebuild/reinstall the package to refresh installed metadata.
 
-The [v0.4.0-alpha release checkpoint](../../docs/release-v0.4.0-alpha.md) uses Python's
-normalized `0.4.0a0` package version. That document is historical; subsequent
-unreleased M31–M34 CLI capabilities do not change this version baseline.
+The [v0.5.0-alpha release candidate](../../docs/release-v0.5.0-alpha.md) uses Python's
+normalized `0.5.0a0` package version. Publication is a separate reviewed operation;
+the wheel/sdist are local packaging evidence, with no PyPI publication planned.
+The [v0.4.0-alpha checkpoint](../../docs/release-v0.4.0-alpha.md) is historical.
 The [v0.1.0 candidate checklist](../../docs/release-candidate-v0.1.0.md) remains
 historical. Start safely with `ghost demo nexora`, then follow its printed report;
 use the printed demo home for subsequent `ghost doctor` or session inspection.
