@@ -1,13 +1,14 @@
 # GHOST Desktop — Command Space
 
-The published GHOST v0.4.0-alpha baseline is the Safe Desktop Action Requests checkpoint: a local macOS
-workflow cockpit for reviewing projects, active sessions, memory, and artifacts
-through a read-only snapshot. Native actions
-include click-only Open/Reveal for approved generated artifacts and M29's local
-pending action requests.
-See the [release checkpoint](../../docs/release-v0.4.0-alpha.md) for historical scope
-and versions. Current unreleased desktop capabilities also include M35 voice and
-M36 intent below; versions remain unchanged.
+Current source version is GHOST v0.5.0-alpha (`0.5.0-alpha` in package/Tauri/Cargo).
+The desktop reviews projects, active sessions, memory, and artifacts through a
+read-only snapshot. Native actions include click-only Open/Reveal for approved
+artifacts, pending Action Requests, controlled M35 voice transcription and
+proposal-only M36 intent interpretation. Saved requests/plans never execute here.
+See the [release preparation notes](../../docs/release-v0.5.0-alpha.md) for current
+scope, privacy and distribution limits. Publication is a separate reviewed step.
+The previous published [v0.4.0-alpha checkpoint](../../docs/release-v0.4.0-alpha.md)
+remains historical; published assets are listed under GitHub Releases.
 
 From `apps/desktop`:
 

@@ -34,9 +34,25 @@ test("main-window capability surface grants no generic shell, HTTP, filesystem o
 
 test("bundle keeps established identifier, alpha version and microphone-only privacy description", () => {
   assert.equal(config.identifier, "com.kavisara.ghost");
-  assert.equal(config.version, "0.4.0-alpha");
+  assert.equal(config.productName, "GHOST");
+  assert.equal(config.version, "0.5.0-alpha");
   const plist = readFileSync(new URL("../src-tauri/Info.plist", import.meta.url), "utf8");
   assert.match(plist, /NSMicrophoneUsageDescription/);
   assert.doesNotMatch(plist, /NSCameraUsageDescription/);
   assert.equal((plist.match(/<key>/g) ?? []).length, 1);
+});
+
+test("release versions agree across CLI, desktop, Tauri and Cargo sources", () => {
+  const packageJson = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8"));
+  assert.equal(packageJson.version, config.version);
+  const cargo = readFileSync(new URL("../src-tauri/Cargo.toml", import.meta.url), "utf8");
+  const cargoPackage = cargo.split("[package]\n")[1].split("\n[")[0];
+  assert.match(cargoPackage, /^name = "desktop"$/m);
+  assert.equal(cargoPackage.match(/^version = "([^"]+)"$/m)?.[1], config.version);
+  const lock = readFileSync(new URL("../src-tauri/Cargo.lock", import.meta.url), "utf8");
+  const desktopEntries = lock.split("[[package]]\n").filter(entry => /^name = "desktop"$/m.test(entry));
+  assert.equal(desktopEntries.length, 1);
+  assert.equal(desktopEntries[0].match(/^version = "([^"]+)"$/m)?.[1], config.version);
+  const cli = readFileSync(new URL("../../cli/src/ghost_cli/__init__.py", import.meta.url), "utf8");
+  assert.equal(cli.match(/^__version__ = "([^"]+)"$/m)?.[1], "0.5.0a0");
 });
