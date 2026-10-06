@@ -1,3 +1,5 @@
+mod connectors;
+mod credentials;
 mod intent;
 mod snapshot;
 mod voice;
