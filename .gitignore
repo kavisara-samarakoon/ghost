@@ -12,9 +12,21 @@ out/
 src-tauri/target/
 
 # environment files
-.env
-.env.local
-.env.*.local
+# No environment examples are allowlisted; review sanitized examples before exceptions.
+.[eE][nN][vV]
+.[eE][nN][vV].*
+
+# Credential containers and private local exports
+*.pem
+*.key
+*.p12
+*.pfx
+*.mobileprovision
+*.cer
+*.jsonl
+*.sqlite
+*.sqlite3
+*.db
 
 # macOS
 .DS_Store
@@ -41,3 +53,7 @@ htmlcov/
 
 # Local GHOST workspace (dogfooding)
 .ghost/
+.ghost-setup-*/
+ghost-home/
+transcripts/
+recordings/
