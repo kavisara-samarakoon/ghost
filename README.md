@@ -24,27 +24,53 @@ the CLI, shell, Git/GitHub, or release operations.
 Current source version: **v0.5.0-alpha — Controlled AI, Voice & Safe Orchestration**
 (desktop `0.5.0-alpha`, CLI `0.5.0a0`). The
 [release preparation notes](docs/release-v0.5.0-alpha.md) cover M31–M37.
-Publication of v0.5.0-alpha is a separate reviewed operation.
+Published prerelease: [v0.5.0-alpha](https://github.com/kavisara-samarakoon/ghost/releases/tag/v0.5.0-alpha),
+from commit `a70834eb993efc4294f4be65ec0ff5fcc509b7b8`.
 
 Previous published checkpoint: **v0.4.0-alpha — Safe Desktop Action Requests**.
 Its [release notes](docs/release-v0.4.0-alpha.md) describe that historical scope.
 The image above is historical v0.3.0-alpha artwork. Published assets are listed
-under GitHub Releases; local v0.5 candidates are not published assets.
+under GitHub Releases; local candidate bundles are separate from published assets.
 
 This remains an alpha project for controlled local dogfooding/testing. Trusted
 public macOS distribution requires Developer ID signing and notarization.
 Live-provider validation is required for production claims; an unsigned alpha
-prerelease requires explicit owner acceptance of the disclosed limitations at the
-later release gate. Local validation alone does not establish production readiness.
+prerelease retains the disclosed distribution and live-provider limitations.
+Local validation alone does not establish production readiness.
 
 ## Download and install GHOST desktop
 
 Use [GitHub Releases](https://github.com/kavisara-samarakoon/ghost/releases) for
 published assets and their release-specific checksum and installation instructions.
 Compare the downloaded DMG's `shasum -a 256` result with that release's checksum;
-local M38 bundles are candidate validation artifacts. The current candidate
+local M38 bundles are candidate validation artifacts. The published v0.5.0-alpha DMG
 targets Apple Silicon. Builds without Developer ID signing/notarization have macOS
 Gatekeeper limitations; no GHOST setting bypasses macOS security.
+
+## Public code, private data
+
+Publishing GHOST source does not imply publishing the user's GHOST data. This
+public repository contains the engine, tests, contracts, sanitized documentation
+and examples; releases contain application binaries. Public-source safety must
+not depend on keeping the engine's implementation secret.
+
+Keep `~/.ghost` (or a custom `GHOST_HOME`) and every project's `.ghost/` private:
+registry/configuration, sessions, goals, notes, outputs, context packs, handoffs,
+AI drafts, intent plans and audits are local user data. Audio and transcripts stay
+in memory in the current desktop; any saved/exported copies must remain private.
+API keys, credentials, future OAuth/access/refresh tokens, cookies and personal
+Gmail/Calendar/contact integration data never belong in the public repository or
+release bundles. Explicitly confirmed provider requests send reviewed content
+off-device; they do not publish it to GitHub.
+
+This repository ignores root and nested `.ghost/`, environment files (including
+case variants), logs and common credential containers. A custom `GHOST_HOME`
+should be outside the checkout. Other registered repositories need their own
+ignore rules: GHOST does not install them. Ignore rules do not protect already
+tracked or force-added files. CI's local filename guard prevents common accidental
+staging; it does not replace content/history/release and visual privacy review.
+See [the M39 privacy audit](docs/public-repository-privacy-m39.md) for evidence,
+historical identifier findings and remaining owner decisions.
 
 ## CLI setup from source
 
