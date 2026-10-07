@@ -223,3 +223,85 @@ pub async fn disconnect_google_account(
     .await
     .map_err(|_| "unavailable")?
 }
+
+/// M42's only bridge: selected read operations, using the existing account/transport gates.
+pub(crate) fn read_context(
+    state: &AssistantState,
+    account_id: AccountId,
+    query: &str,
+    mail: bool,
+    calendar: bool,
+    contacts: bool,
+    window: Option<Window>,
+) -> Result<(
+    Option<MailResult>,
+    Option<AgendaResult>,
+    Option<ContactResult>,
+)> {
+    run("main", state, |assistant| {
+        read_selected(
+            assistant, account_id, query, mail, calendar, contacts, window,
+        )
+    })
+}
+
+pub(crate) fn read_selected<
+    S: crate::credentials::CredentialStore,
+    D: DiskStore,
+    T: super::api::ApiTransport,
+>(
+    assistant: &mut Assistant<'_, S, D, T>,
+    account_id: AccountId,
+    query: &str,
+    mail: bool,
+    calendar: bool,
+    contacts: bool,
+    window: Option<Window>,
+) -> Result<(
+    Option<MailResult>,
+    Option<AgendaResult>,
+    Option<ContactResult>,
+)> {
+    input_text(query, 480, false)?;
+    if contacts {
+        input_text(query, 128, false)?;
+        assistant.account(account_id, crate::connectors::Permission::ContactsRead)?;
+    }
+    if mail {
+        assistant.account(account_id, crate::connectors::Permission::MailRead)?;
+    }
+    if calendar {
+        window.as_ref().ok_or("invalid_input")?.normalized()?;
+        assistant.account(account_id, crate::connectors::Permission::CalendarRead)?;
+    }
+    let mail = if mail {
+        Some(assistant.search(
+            MailSearch {
+                account_id,
+                query: query.into(),
+                limit: 5,
+            },
+            false,
+        )?)
+    } else {
+        None
+    };
+    let agenda = if calendar {
+        Some(assistant.agenda(AgendaInput {
+            account_id,
+            window: window.ok_or("invalid_input")?,
+            limit: 5,
+        })?)
+    } else {
+        None
+    };
+    let contacts = if contacts {
+        Some(assistant.contacts(ContactsInput {
+            account_id,
+            query: query.into(),
+        })?)
+    } else {
+        None
+    };
+    Ok((mail, agenda, contacts))
+}

@@ -100,7 +100,7 @@ pub fn from_environment(query: &str, alias: Option<&str>) -> SearchResponse {
     }
 }
 
-pub(super) fn load(
+pub(crate) fn load(
     home: &Path,
     query: &str,
     alias: Option<&str>,

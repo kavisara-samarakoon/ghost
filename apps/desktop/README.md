@@ -141,3 +141,23 @@ frontend origin. Capabilities are main-window-only with fixed native commands;
 no generic shell/HTTP/filesystem permissions are granted. OpenAI calls remain
 Rust-native. See [M37 readiness evidence](../../docs/release-readiness-m37.md) for
 local packaging, distribution blockers, and untested live-provider behavior.
+
+### Personal memory and unified context
+
+The Memory page retains Workspace search and adds Personal and Context views.
+Personal records are local plaintext private data in `GHOST_HOME/memory/`
+(default `~/.ghost/memory/`), protected by owner-only directory/file permissions.
+Credentials are rejected. Sensitive memories must be local-only; `provider_allowed`
+is a future-use policy label and sends nothing in M42. There is no automatic
+capture, ingestion, migration, AI search or OpenAI call from memory/context.
+
+Create/update/archive/delete require a complete native preview and its exact
+SHA-256 confirmation phrase; reviews expire in five minutes and are single-use.
+Deletion removes the current GHOST record, not bytes retained by backups or disk
+snapshots. Search excludes archived/expired records; review filters retain access.
+
+Context combines selected personal and allowlisted project memory as data-only,
+with at most 24 items / 48 KiB and a context hash that grants no authority. Google
+sources default off; selecting them and clicking Build Context makes explicit
+M41 read-only Google requests. Results stay in memory and are never saved to
+personal memory or sent to OpenAI. Context is not persisted or exported.

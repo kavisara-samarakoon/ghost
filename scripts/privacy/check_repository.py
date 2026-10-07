@@ -11,7 +11,7 @@ import subprocess
 from pathlib import Path, PurePosixPath
 
 PRIVATE_DIRECTORIES = {
-    ".ghost", ".ghost-dev", "ghost-home", "transcripts", "recordings",
+    ".ghost", ".ghost-dev", "ghost-home", "ghost_home", "transcripts", "recordings",
 }
 CREDENTIAL_SUFFIXES = {".pem", ".key", ".p12", ".pfx", ".mobileprovision", ".cer"}
 PRIVATE_RECORD_SUFFIXES = {".jsonl", ".log", ".sqlite", ".sqlite3", ".db"}
@@ -25,6 +25,8 @@ def forbidden_reason(path: str) -> str | None:
         for part in normalized.parts
     ):
         return "private GHOST/voice storage"
+    if normalized.name in {"personal-memory.json", ".memory-lock"}:
+        return "private personal-memory document"
     if normalized.name == ".env" or normalized.name.startswith(".env."):
         return "environment file (no example exceptions approved)"
     if normalized.suffix in CREDENTIAL_SUFFIXES:

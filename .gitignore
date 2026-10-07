@@ -57,3 +57,8 @@ htmlcov/
 ghost-home/
 transcripts/
 recordings/
+
+# Durable private personal memory (also protected by the index privacy guard)
+personal-memory.json
+.memory-lock
+GHOST_HOME/

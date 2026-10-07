@@ -23,6 +23,11 @@ SPEC.loader.exec_module(guard)
 # These paths need not exist: check-ignore tests the policy without secret files.
 IGNORE_PROBES = [
     ".ghost/private.json",
+    "personal-memory.json",
+    "nested/.memory-lock",
+    "nested/personal-memory.json",
+    "nested/memory-audit.jsonl",
+    "GHOST_HOME/memory/document.json",
     "nested/project/.ghost/session.json",
     ".ghost-dev/test.json",
     ".env",
@@ -74,6 +79,12 @@ class RepositoryPrivacyTests(unittest.TestCase):
 
     def git(self, *args: str) -> bytes:
         return subprocess.check_output(["git", *args], cwd=self.root)
+
+    def test_personal_memory_guard(self) -> None:
+        for path in ["personal-memory.json", "nested/Personal-Memory.JSON", "memory-audit.jsonl", "GHOST_HOME/memory/document.json"]:
+            with self.subTest(path=path):
+                self.assertIsNotNone(guard.forbidden_reason(path))
+        self.assertIsNone(guard.forbidden_reason("apps/desktop/src/personal-memory.ts"))
 
     def test_ignore_policy(self) -> None:
         for path in IGNORE_PROBES:
@@ -128,9 +139,8 @@ class RepositoryPrivacyTests(unittest.TestCase):
         private_path = "personal-name/.ghost/private-note.json"
         output = io.StringIO()
         findings = [(private_path, "private storage")]
-        with patch.object(guard, "check_repository", return_value=findings):
-            with redirect_stdout(output):
-                self.assertEqual(guard.main(), 1)
+        with patch.object(guard, "check_repository", return_value=findings), redirect_stdout(output):
+            self.assertEqual(guard.main(), 1)
         self.assertNotIn(private_path, output.getvalue())
         self.assertNotIn("personal-name", output.getvalue())
         self.assertIn("path_sha256=", output.getvalue())

@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-personal-memory"
+description = "Explicit local personal memory review/confirmed writes and ephemeral data-only context."
+commands.allow = ["get_personal_memory_status", "list_personal_memories", "search_personal_memory", "get_personal_memory", "prepare_personal_memory_mutation", "execute_personal_memory_mutation", "build_unified_context"]
