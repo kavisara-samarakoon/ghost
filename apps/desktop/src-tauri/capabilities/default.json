@@ -9,6 +9,7 @@
     "ghost-controlled-input",
     "ghost-google-assistant",
     "ghost-personal-memory",
-    "ghost-jarvis"
+    "ghost-jarvis",
+    "ghost-automations"
   ]
 }

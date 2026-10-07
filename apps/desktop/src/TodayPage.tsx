@@ -3,8 +3,12 @@ import { PersonalMemoryClient, memoryError } from "./personal-memory.ts";
 import type { GhostProject, GhostSnapshot } from "./ghost-snapshot.ts";
 import type { RecentRequest } from "./action-requests.ts";
 import type { GoogleStatus } from "./google-assistant.ts";
-export default function TodayPage({ project, mode, recent = [], connections }: { project?: GhostProject; mode: GhostSnapshot["mode"]; recent?: RecentRequest[]; connections?: GoogleStatus | null }) {
+import AutomationInbox from "./AutomationInbox.tsx";
+import { needsAttention, type AutomationItem, type CommandPrefill } from "./automations.ts";
+import type { DesktopPage } from "./DesktopPages.tsx";
+export default function TodayPage({ project, mode, recent = [], connections, automationItems = [], onOpenAutomation, onHandleAutomation }: { project?: GhostProject; mode: GhostSnapshot["mode"]; recent?: RecentRequest[]; connections?: GoogleStatus | null; automationItems?: AutomationItem[]; onOpenAutomation?: (page: DesktopPage, prefill: CommandPrefill | null, alias: string | null) => void; onHandleAutomation?: (id: string, status: "acknowledged" | "dismissed") => void }) {
   const [memory] = useState(() => new PersonalMemoryClient()); const [memoryCount, setMemoryCount] = useState<number | null>(null); const [message, setMessage] = useState(""); const [busy, setBusy] = useState(false);
+  const pending = automationItems.filter(item => item.status === "pending"); const attention = mode === "live-local" ? needsAttention(project, recent, pending.length) : [];
   const session = project?.active_session; const artifact = project?.recent_artifacts[0];
   return <section className="today-page"><header className="desktop-page-header"><div><p className="page-eyebrow">Local overview</p><h1>Today</h1><p>Your current work, without background provider reads.</p></div><span className="badge">{mode === "live-local" ? "Local snapshot" : "Sample overview"}</span></header>
     <div className="today-grid"><section className="surface"><span className="page-eyebrow">Current project</span><h2>{project?.name ?? "No project selected"}</h2><p>{project?.status_preview ?? "No recorded status"}</p><span>{project?.alias}</span></section>
@@ -12,6 +16,7 @@ export default function TodayPage({ project, mode, recent = [], connections }: {
       <section className="surface"><span className="page-eyebrow">Latest loaded artifact</span><h2>{artifact?.title ?? "No artifact loaded"}</h2><p>{artifact?.preview ?? "Review saved work in Artifacts"}</p></section>
       <section className="surface"><span className="page-eyebrow">Private memory / connections</span><h2>{memoryCount === null ? "Memory status not checked" : `${memoryCount} personal memories`}</h2><button disabled={busy || !memory.available()} onClick={async () => { if (busy) return; setBusy(true); try { const status = await memory.status(); setMemoryCount(status.record_count); } catch (e) { setMessage(memoryError(e)); } finally { setBusy(false); } }}>Check local memory status</button><p>{connections ? `${connections.accounts.filter(a => a.status === "connected").length} connected Google accounts in the last explicit check` : "Connection status not checked. Open Connections to review."}</p></section>
     </div><section className="surface"><h2>Recent pending workflow requests</h2><p>Local drafts only. Nothing is executed from this overview.</p>{recent.length ? <ul className="request-list">{recent.slice(0, 10).map(r => <li key={r.id}><strong>{r.action_type.replace(/_/g, " ")}</strong><span>{r.project_alias} · pending · {r.created_at}</span></li>)}</ul> : <p>No recent pending requests loaded.</p>}</section>
+    {mode === "live-local" && <><section className="surface"><h2>Needs attention</h2><p>Deterministic suggestions from the already loaded local snapshot only. Nothing is saved or executed.</p>{attention.length ? <ul>{attention.map(text => <li key={text}>{text}</li>)}</ul> : <p>No attention signals in the loaded snapshot.</p>}</section><AutomationInbox items={pending} onOpen={onOpenAutomation} onHandle={onHandleAutomation}/></>}
     {message && <p role="status">{message}</p>}
   </section>;
 }

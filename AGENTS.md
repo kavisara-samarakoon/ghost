@@ -136,7 +136,15 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   allowlisted search and explicit review. Google context is structurally forbidden
   from AI outbound envelopes. Plans never run automatically or as a batch; each
   user-selected step delegates to its existing M31/M41/M42 native confirmation
-  gate. There is no generic execution command, shell, agent loop or active automation.
+  gate. There is no generic execution command, shell or agent loop.
+
+## M44 Automation Boundary
+
+Automations schedule local attention only. Evaluation reads finite allowlisted local
+metadata and creates inert due items; it makes no provider polling, Google or AI calls
+and has no autonomous execution authority. The app must be open for live evaluation;
+bounded catch-up occurs on reopening. Due items still require a user click and the
+existing independent review/explicit-action gates. Tests use temporary GHOST_HOME only.
 
 ## Coding Rules
 

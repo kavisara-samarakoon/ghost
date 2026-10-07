@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-automations"
+description = "Main-window local attention scheduling and reviewed definition mutations. No task execution."
+commands.allow = ["get_automation_status", "list_automations", "list_automation_inbox", "prepare_automation_mutation", "execute_automation_mutation", "evaluate_automations", "acknowledge_automation_item", "dismiss_automation_item"]

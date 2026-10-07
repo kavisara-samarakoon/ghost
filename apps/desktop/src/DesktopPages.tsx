@@ -6,6 +6,8 @@ import ProjectsPage from "./ProjectsPage.tsx";
 import SessionsPage from "./SessionsPage.tsx";
 import GoogleAssistant from "./GoogleAssistant.tsx";
 import TodayPage from "./TodayPage.tsx";
+import AutomationsPage from "./AutomationsPage.tsx";
+import type { AutomationClient, AutomationState, CommandPrefill } from "./automations.ts";
 import type { GoogleStatus } from "./google-assistant.ts";
 import type { RecentRequest } from "./action-requests.ts";
 
@@ -13,6 +15,9 @@ export const pageNames = ["Command", "Today", "Mail", "Calendar", "Projects", "M
 export type DesktopPage = typeof pageNames[number];
 
 type PageProps = {
+  automationState?: AutomationState; automationClient?: AutomationClient; onAutomationChanged?: () => Promise<void>;
+  onOpenAutomation?: (page: DesktopPage, prefill: CommandPrefill | null, alias: string | null) => void;
+  onHandleAutomation?: (id: string, status: "acknowledged" | "dismissed") => void;
   page: Exclude<DesktopPage, "Command">;
   projects: GhostProject[];
   project?: GhostProject;
@@ -46,8 +51,8 @@ export default function DesktopPages(props: PageProps) {
   const [projectQuery, setProjectQuery] = useState("");
   const { page, project, mode, projects, onSelect, notice, warnings, searchInputRef } = props;
   if (page === "Mail" || page === "Calendar" || page === "Connections") return <GoogleAssistant view={page === "Mail" ? "mail" : page === "Calendar" ? "calendar" : "connections"} initialStatus={props.connections} onStatus={props.onConnections} />;
-  if (page === "Today") return <TodayPage project={project} mode={mode} recent={props.recentRequests} connections={props.connections} />;
-  if (page === "Automations") return <section className="automations-page"><header className="desktop-page-header"><div><p className="page-eyebrow">Coming next · M44</p><h1>Automations</h1><p>Not enabled yet.</p></div><span className="badge">Inactive</span></header><section className="surface"><h2>You stay in control</h2><p>M44 will add user-approved scheduled and conditional workflows. No scheduler, background monitoring or automated action is active in this version.</p></section></section>;
+  if (page === "Today") return <TodayPage project={project} mode={mode} recent={props.recentRequests} connections={props.connections} automationItems={props.automationState?.inbox} onOpenAutomation={props.onOpenAutomation} onHandleAutomation={props.onHandleAutomation} />;
+  if (page === "Automations") return <AutomationsPage state={props.automationState} projects={mode === "live-local" ? projects : []} client={props.automationClient} onChanged={props.onAutomationChanged} onOpen={props.onOpenAutomation} onHandle={props.onHandleAutomation} />;
   return <div className={`desktop-page page-${page.toLowerCase()}`}>
     <header className="desktop-page-header">
       <div><p className="page-eyebrow">{page === "Sessions" ? "Workflow continuity" : page === "Artifacts" ? "Generated work" : page === "Memory" ? "Local memory" : mode === "live-local" ? "Your local workspace" : "Static preview · Sample data"}</p><h1 tabIndex={-1}>{page}</h1><p>{descriptions[page]}</p></div>

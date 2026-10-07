@@ -1,3 +1,4 @@
+mod automations;
 mod connectors;
 mod credentials;
 mod intent;
@@ -150,7 +151,16 @@ pub fn run() {
         .manage(connectors::assistant::runtime::AssistantState::default())
         .manage(memory::mutations::MemoryState::default())
         .manage(jarvis::interpret::JarvisState::default())
+        .manage(automations::mutations::AutomationState::default())
         .invoke_handler(tauri::generate_handler![
+            automations::ipc::get_automation_status,
+            automations::ipc::list_automations,
+            automations::ipc::list_automation_inbox,
+            automations::ipc::prepare_automation_mutation,
+            automations::ipc::execute_automation_mutation,
+            automations::ipc::evaluate_automations,
+            automations::ipc::acknowledge_automation_item,
+            automations::ipc::dismiss_automation_item,
             jarvis::ipc::get_jarvis_capabilities,
             jarvis::ipc::prepare_jarvis_request,
             jarvis::ipc::interpret_jarvis_request,

@@ -165,7 +165,7 @@ personal memory or sent to OpenAI. Context is not persisted or exported.
 
 Command is the primary Ask GHOST experience in a restrained sidebar shell with
 Today, Mail, Calendar, Projects, Memory, Sessions, Artifacts and Connections.
-Automations is explicitly inactive; no scheduler or background provider polling runs.
+Automations provides local attention scheduling only; no background provider polling runs.
 Cmd+K focuses Command within the app. The approved logo remains unchanged.
 
 Prepare builds a complete native outbound review; a separate Send makes one
@@ -184,3 +184,34 @@ Calendar page and is excluded from Jarvis v1. Mail, Calendar and Contacts remain
 explicit-click only; mounting a page makes no provider read. Voice remains reviewed
 transcription followed by a separate planning review, without continuous listening.
 Jarvis audit is metadata-only in `GHOST_HOME/desktop-jarvis-audit.jsonl`.
+
+### M44 local attention automations
+
+Automations run while GHOST is open. Missed schedules are safely caught up when
+the app is opened again. Visible-app evaluation is throttled to once per 60 seconds;
+there is no OS daemon, login service or OS notification dependency.
+
+Version 1 supports once (RFC3339), daily and weekly (wall-clock time with an explicit
+fixed UTC offset), registered-project/no-active-session and global recent-pending-request
+conditions. Recurrence is not IANA/DST-aware. Conditions fire on false-to-true edges,
+persistently re-arm on false and never poll providers. The recent-request reader
+inspects its existing bounded window, not the entire request history.
+
+Tasks are Reminder, Ask GHOST prompt, or one finite Review page. A due item has no
+action authority. Opening Command prefills text locally with sharing off; Prepare,
+outbound review and Send remain separate. Opening Mail/Calendar/Connections makes
+no Google read. No memory ingestion or scheduled AI/provider call occurs.
+
+Private plaintext is in GHOST_HOME/automations/automations.json (definitions, cursors
+and inbox in one atomic document) and GHOST_HOME/desktop-automation-audit.jsonl
+(metadata only). Directories are 0700, files 0600, with descriptor-relative identity,
+NOFOLLOW, owner and link checks. Limits are 128 definitions, 512 retained inbox items,
+2 MiB combined document and 4 MiB audit. Limits fail closed; no pending item/history
+is silently discarded. Explicit history pruning is deferred.
+
+Create/update/pause/resume/delete require complete native Preview, SHA-256 and exact
+CREATE/UPDATE/PAUSE/RESUME/DELETE AUTOMATION <sha256>. Reviews expire in five minutes,
+are consumed before attempts and revalidate current state. Acknowledge/Dismiss only
+change local inbox status. A due item's task snapshot never changes with its definition.
+Catch-up creates at most one most-recent occurrence per automation and 32 per evaluation.
+M45 voice and M46 live-provider/distribution hardening remain separate.
