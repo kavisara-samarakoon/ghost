@@ -81,7 +81,12 @@ class RepositoryPrivacyTests(unittest.TestCase):
         return subprocess.check_output(["git", *args], cwd=self.root)
 
     def test_personal_memory_guard(self) -> None:
-        for path in ["personal-memory.json", "nested/Personal-Memory.JSON", "memory-audit.jsonl", "GHOST_HOME/memory/document.json"]:
+        for path in [
+            "personal-memory.json",
+            "nested/Personal-Memory.JSON",
+            "memory-audit.jsonl",
+            "GHOST_HOME/memory/document.json",
+        ]:
             with self.subTest(path=path):
                 self.assertIsNotNone(guard.forbidden_reason(path))
         self.assertIsNone(guard.forbidden_reason("apps/desktop/src/personal-memory.ts"))
@@ -139,7 +144,10 @@ class RepositoryPrivacyTests(unittest.TestCase):
         private_path = "personal-name/.ghost/private-note.json"
         output = io.StringIO()
         findings = [(private_path, "private storage")]
-        with patch.object(guard, "check_repository", return_value=findings), redirect_stdout(output):
+        with (
+            patch.object(guard, "check_repository", return_value=findings),
+            redirect_stdout(output),
+        ):
             self.assertEqual(guard.main(), 1)
         self.assertNotIn(private_path, output.getvalue())
         self.assertNotIn("personal-name", output.getvalue())
