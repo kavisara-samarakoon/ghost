@@ -54,6 +54,10 @@ assert_not_serialize!(crate::connectors::oauth::OAuthExchange);
 assert_not_serialize!(crate::connectors::google::OAuthTokenResponse);
 assert_not_serialize!(crate::connectors::google::TokenRequest);
 assert_not_serialize!(crate::connectors::google::TokenHttpResponse);
+assert_not_serialize!(crate::connectors::assistant::runtime::Runtime);
+assert_not_serialize!(crate::connectors::assistant::runtime::AssistantState);
+assert_not_serialize!(crate::connectors::assistant::runtime::CachedAccess);
+assert_not_serialize!(crate::connectors::assistant::api::HttpReply);
 
 const _: fn() = || {
     trait Ambiguous<A> {

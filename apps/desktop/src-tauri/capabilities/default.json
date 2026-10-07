@@ -6,6 +6,7 @@
   "permissions": [
     "core:default",
     "ghost-local-artifacts",
-    "ghost-controlled-input"
+    "ghost-controlled-input",
+    "ghost-google-assistant"
   ]
 }

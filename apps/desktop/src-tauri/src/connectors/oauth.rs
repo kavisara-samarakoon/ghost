@@ -159,6 +159,16 @@ impl OAuthPendingFlow {
             requested: self.requested,
         })
     }
+    pub(super) fn validate_callback(
+        &self,
+        value: &str,
+        now: Instant,
+    ) -> Result<(), ConnectorError> {
+        if now < self.created_at || now >= self.expires_at {
+            return Err(ConnectorError::ExpiredFlow);
+        }
+        self.parse_callback(value).map(|_| ())
+    }
     fn parse_callback(&self, value: &str) -> Result<Secret, ConnectorError> {
         let invalid = ConnectorError::InvalidCallback;
         if value.len() > MAX_CALLBACK_BYTES || value.chars().any(char::is_control) {

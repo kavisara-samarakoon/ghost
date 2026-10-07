@@ -4,8 +4,9 @@ import ArtifactsPage from "./ArtifactsPage.tsx";
 import MemoryPage from "./MemoryPage.tsx";
 import ProjectsPage from "./ProjectsPage.tsx";
 import SessionsPage from "./SessionsPage.tsx";
+import GoogleAssistant from "./GoogleAssistant.tsx";
 
-export const pageNames = ["Command", "Projects", "Sessions", "Memory", "Artifacts"] as const;
+export const pageNames = ["Command", "Projects", "Sessions", "Memory", "Artifacts", "Assistant"] as const;
 export type DesktopPage = typeof pageNames[number];
 
 type PageProps = {
@@ -25,6 +26,7 @@ const descriptions = {
   Sessions: "Review active project sessions, goals, notes, and the next safe step without running commands from the desktop.",
   Memory: "Search sessions, decisions, outputs, drafts, and generated context across your local GHOST workspace.",
   Artifacts: "Review context packs, handoffs, outputs, and drafts created by GHOST — without unsafe desktop execution.",
+  Assistant: "Explicit Google access",
 };
 
 function ProjectPicker({ projects, project, onSelect }: Pick<PageProps, "projects" | "project" | "onSelect">) {
@@ -39,6 +41,7 @@ function ProjectPicker({ projects, project, onSelect }: Pick<PageProps, "project
 export default function DesktopPages(props: PageProps) {
   const [projectQuery, setProjectQuery] = useState("");
   const { page, project, mode, projects, onSelect, notice, warnings, searchInputRef } = props;
+  if (page === "Assistant") return <GoogleAssistant />;
   return <div className={`desktop-page page-${page.toLowerCase()}`}>
     <header className="desktop-page-header">
       <div><p className="page-eyebrow">{page === "Sessions" ? "Workflow continuity" : page === "Artifacts" ? "Generated work" : page === "Memory" ? "Local memory" : mode === "live-local" ? "Your local workspace" : "Static preview · Sample data"}</p><h1 tabIndex={-1}>{page}</h1><p>{descriptions[page]}</p></div>

@@ -2,6 +2,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod accounts;
+pub(crate) mod assistant;
 pub(crate) mod google;
 pub(crate) mod oauth;
 #[cfg(unix)]
@@ -115,7 +116,7 @@ pub(crate) fn registry() -> [ConnectorDescriptor; 1] {
         provider: Provider::Google,
         display_name: "Google",
         supported_permissions: Permission::ALL,
-        connection_capability: "foundation_only",
+        connection_capability: "installed_desktop_oauth",
         credential_backend_supported: cfg!(target_os = "macos"),
     }]
 }
@@ -143,6 +144,17 @@ pub(crate) fn finalize_connection<S: CredentialStore, A: AccountRepository>(
     label: String,
     email: Option<String>,
     tokens: google::OAuthTokenResponse,
+    now: u64,
+) -> Result<AccountView, ConnectorError> {
+    finalize_connection_ref(broker, accounts, id, label, email, &tokens, now)
+}
+pub(super) fn finalize_connection_ref<S: CredentialStore, A: AccountRepository>(
+    broker: &mut CredentialBroker<S>,
+    accounts: &mut A,
+    id: AccountId,
+    label: String,
+    email: Option<String>,
+    tokens: &google::OAuthTokenResponse,
     now: u64,
 ) -> Result<AccountView, ConnectorError> {
     let account = Account::new(

@@ -102,7 +102,7 @@ impl GhostSnapshot {
     }
 }
 
-fn resolve_home(
+pub(crate) fn resolve_home(
     override_home: Option<OsString>,
     user_home: Option<PathBuf>,
     cwd: Option<PathBuf>,

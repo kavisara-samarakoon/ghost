@@ -48,7 +48,10 @@ pub(super) fn permission_scopes(permission: Permission) -> &'static [&'static st
         Permission::MailRead => &["https://www.googleapis.com/auth/gmail.readonly"],
         Permission::MailDraft => &["https://www.googleapis.com/auth/gmail.compose"],
         Permission::MailSend => &["https://www.googleapis.com/auth/gmail.send"],
-        Permission::CalendarRead => &["https://www.googleapis.com/auth/calendar.events.readonly"],
+        Permission::CalendarRead => &[
+            "https://www.googleapis.com/auth/calendar.events.readonly",
+            "https://www.googleapis.com/auth/calendar.events.freebusy",
+        ],
         Permission::CalendarEventCreate | Permission::CalendarEventUpdate => {
             &["https://www.googleapis.com/auth/calendar.events.owned"]
         }
@@ -96,7 +99,7 @@ pub(crate) struct OAuthTokenResponse {
     pub(super) access_token: Secret,
     pub(super) refresh_token: Option<Secret>,
     pub(super) permissions: Vec<Permission>,
-    expires_in: Duration,
+    pub(super) expires_in: Duration,
     refresh_expires_in: Option<Duration>,
 }
 impl OAuthTokenResponse {
@@ -316,26 +319,35 @@ impl Read for SecretBody {
         Ok(count)
     }
 }
-fn client() -> Result<Client, ConnectorError> {
+pub(crate) fn send_token_request(
+    request: TokenRequest,
+) -> Result<TokenHttpResponse, ConnectorError> {
+    send_token_request_with_timeout(request, Duration::from_secs(45))
+}
+fn client_with_timeout(timeout: Duration) -> Result<Client, ConnectorError> {
     Client::builder()
         .https_only(true)
         .no_proxy()
         .redirect(reqwest::redirect::Policy::none())
         .retry(reqwest::retry::never())
-        .connect_timeout(Duration::from_secs(10))
-        .timeout(Duration::from_secs(45))
+        .connect_timeout(timeout.min(Duration::from_secs(10)))
+        .timeout(timeout.min(Duration::from_secs(45)))
         .build()
         .map_err(|_| ConnectorError::Transport)
 }
-pub(crate) fn send_token_request(
+pub(crate) fn send_token_request_with_timeout(
     request: TokenRequest,
+    timeout: Duration,
 ) -> Result<TokenHttpResponse, ConnectorError> {
+    if timeout.is_zero() {
+        return Err(ConnectorError::ExpiredFlow);
+    }
     let length = request.form.len();
     let body = SecretBody {
         bytes: Zeroizing::new(request.form.as_bytes().to_vec()),
         offset: 0,
     };
-    let response = client()?
+    let response = client_with_timeout(timeout)?
         .post(TOKEN_ENDPOINT)
         .header(
             reqwest::header::CONTENT_TYPE,
@@ -373,15 +385,16 @@ mod tests {
             "contacts.readonly",
         ];
         for (permission, suffix) in Permission::ALL.into_iter().zip(expected) {
-            assert_eq!(
-                permission_scopes(permission),
-                &[format!("https://www.googleapis.com/auth/{suffix}")]
-            );
+            let mut expected = vec![format!("https://www.googleapis.com/auth/{suffix}")];
+            if permission == Permission::CalendarRead {
+                expected.push("https://www.googleapis.com/auth/calendar.events.freebusy".into());
+            }
+            assert_eq!(permission_scopes(permission), expected);
         }
         let mut reversed = Permission::ALL.to_vec();
         reversed.reverse();
         assert_eq!(scopes(&Permission::ALL), scopes(&reversed));
-        assert_eq!(scopes(&Permission::ALL).len(), 6);
+        assert_eq!(scopes(&Permission::ALL).len(), 7);
         assert!(!scopes(&Permission::ALL)
             .iter()
             .any(|scope| scope.contains("mail.google.com")

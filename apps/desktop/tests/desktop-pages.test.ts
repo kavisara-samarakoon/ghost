@@ -411,7 +411,7 @@ test("Command, Projects, Sessions, Memory, and Artifacts all render after cockpi
 test("global safety strip describes pending drafts without claiming no file writes", () => {
   mockIPC(() => assert.fail("Rendering the safety strip must not invoke native commands"));
   const html = renderToStaticMarkup(createElement(App));
-  assert.match(html, /No shell\/CLI execution · Pending request drafts only · No workflow mutation/);
+  assert.match(html, /No shell\/CLI execution · Local workflow requests remain drafts · Google changes require preview and confirmation/);
   assert.doesNotMatch(html, /No file writes/i);
   // Guard both the live and preview wording, even though server rendering starts in preview.
   assert.doesNotMatch(readFileSync(new URL("../src/App.tsx", import.meta.url), "utf8"), /No file writes/i);
