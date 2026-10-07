@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-jarvis"
+description = "Finite planner metadata, offline outbound review and separately confirmed native AI interpretation. No execution command."
+commands.allow = ["get_jarvis_capabilities", "prepare_jarvis_request", "interpret_jarvis_request"]

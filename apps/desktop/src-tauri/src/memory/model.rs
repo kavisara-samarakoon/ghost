@@ -216,7 +216,7 @@ impl Record {
             })
         })
     }
-    #[allow(dead_code)] // Future-use policy only; M42 has no transmission consumer.
+    // Jarvis may consume this policy only through its separate reviewed outbound request.
     pub fn eligible_for_provider(&self, now: i64) -> bool {
         self.status == Status::Active
             && !self.expired(now)

@@ -192,33 +192,7 @@ pub(crate) fn validate_memory_reference(
         return Err("invalid_source");
     }
     let mut budget = ReadBudget::search();
-    let root = Directory::open(home)?.ok_or("invalid_source")?;
-    let registry =
-        read_yaml::<Registry>(&root, "projects.yaml", &mut budget)?.ok_or("invalid_source")?;
-    if registry.version != 1 || registry.projects.len() > MAX_PROJECTS {
-        return Err("invalid_source");
-    }
-    let project = registry
-        .projects
-        .iter()
-        .find(|p| p.alias == alias)
-        .ok_or("invalid_source")?;
-    if registry
-        .projects
-        .iter()
-        .filter(|p| p.alias == alias || p.path == project.path)
-        .count()
-        != 1
-    {
-        return Err("invalid_source");
-    }
-    let project_root = Directory::open(&project.path)?.ok_or("invalid_source")?;
-    let mut workspace = project_root.child(".ghost")?.ok_or("invalid_source")?;
-    let identity =
-        read_yaml::<Project>(&workspace, "project.yaml", &mut budget)?.ok_or("invalid_source")?;
-    if identity.alias != alias || identity.path != project.path {
-        return Err("invalid_source");
-    }
+    let mut workspace = registered_workspace(home, alias, &mut budget)?;
     let mut parts = path.split('/').peekable();
     while let Some(part) = parts.next() {
         if parts.peek().is_none() {
@@ -411,3 +385,44 @@ fn read_project(
 
 #[cfg(all(test, unix))]
 mod tests;
+
+pub(crate) fn validate_project_binding(home: &Path, alias: &str) -> Result<(), &'static str> {
+    registered_workspace(home, alias, &mut ReadBudget::search()).map(|_| ())
+}
+fn registered_workspace(
+    home: &Path,
+    alias: &str,
+    budget: &mut ReadBudget,
+) -> Result<Directory, &'static str> {
+    if !valid_alias(alias) {
+        return Err("invalid_source");
+    }
+    let home = Directory::open(home)?.ok_or("invalid_source")?;
+    let registry =
+        read_yaml::<Registry>(&home, "projects.yaml", budget)?.ok_or("invalid_source")?;
+    if registry.version != 1 || registry.projects.len() > MAX_PROJECTS {
+        return Err("invalid_source");
+    }
+    let project = registry
+        .projects
+        .iter()
+        .find(|p| p.alias == alias)
+        .ok_or("invalid_source")?;
+    if registry
+        .projects
+        .iter()
+        .filter(|p| p.alias == alias || p.path == project.path)
+        .count()
+        != 1
+    {
+        return Err("invalid_source");
+    }
+    let root = Directory::open(&project.path)?.ok_or("invalid_source")?;
+    let workspace = root.child(".ghost")?.ok_or("invalid_source")?;
+    let identity =
+        read_yaml::<Project>(&workspace, "project.yaml", budget)?.ok_or("invalid_source")?;
+    if identity.alias != alias || identity.path != project.path {
+        return Err("invalid_source");
+    }
+    Ok(workspace)
+}

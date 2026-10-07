@@ -60,13 +60,13 @@ fn validate_path(path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-pub(super) struct IntentStore {
+pub(crate) struct IntentStore {
     directories: Vec<File>,
     parts: Vec<std::ffi::OsString>,
     path: PathBuf,
 }
 impl IntentStore {
-    pub(super) fn open(home: &Path) -> Result<Self, &'static str> {
+    pub(crate) fn open(home: &Path) -> Result<Self, &'static str> {
         validate_path(home)?;
         let parts: Vec<_> = home
             .components()
@@ -126,10 +126,6 @@ impl IntentStore {
             return Err(ERROR);
         }
         Ok(())
-    }
-    fn verify_file(&self, file: &File) -> Result<(), &'static str> {
-        self.verify()?;
-        verify_private_file(self.home(), AUDIT, file)
     }
     pub(super) fn save_plan(&self, bytes: &[u8]) -> Result<(String, String), &'static str> {
         let timestamp = chrono::DateTime::<chrono::Utc>::from(std::time::SystemTime::now())
@@ -234,13 +230,27 @@ impl IntentStore {
     fn append_checked(
         &self,
         event: AuditEvent,
+        checkpoint: impl FnMut(&str) -> Result<(), &'static str>,
+    ) -> Result<(), &'static str> {
+        self.append_named(AUDIT, &event, checkpoint)
+    }
+    pub(crate) fn append_jarvis(
+        &self,
+        event: &crate::jarvis::interpret::AuditEvent,
+    ) -> Result<(), &'static str> {
+        self.append_named("desktop-jarvis-audit.jsonl", event, |_| Ok(()))
+    }
+    fn append_named(
+        &self,
+        name: &str,
+        event: &impl serde::Serialize,
         mut checkpoint: impl FnMut(&str) -> Result<(), &'static str>,
     ) -> Result<(), &'static str> {
         let _guard = AUDIT_LOCK.lock().map_err(|_| ERROR)?;
         self.verify()?;
         // Check existing mode before a writable open: some systems clear special mode bits
         // on open, which must not disguise an unsafe pre-existing entry as a private file.
-        match statat(self.home(), AUDIT, AtFlags::SYMLINK_NOFOLLOW) {
+        match statat(self.home(), name, AtFlags::SYMLINK_NOFOLLOW) {
             Ok(entry) => {
                 if FileType::from_raw_mode(entry.st_mode) != FileType::RegularFile
                     || entry.st_nlink != 1
@@ -256,7 +266,7 @@ impl IntentStore {
         let mut file = File::from(
             openat(
                 self.home(),
-                AUDIT,
+                name,
                 OFlags::WRONLY
                     | OFlags::APPEND
                     | OFlags::CREATE
@@ -268,7 +278,8 @@ impl IntentStore {
             .map_err(|_| ERROR)?,
         );
         checkpoint("opened")?;
-        self.verify_file(&file)?;
+        self.verify()?;
+        verify_private_file(self.home(), name, &file)?;
         let mut bytes = serde_json::to_vec(&event).map_err(|_| ERROR)?;
         bytes.push(b'\n');
         if file.metadata().map_err(|_| ERROR)?.len() + bytes.len() as u64 > MAX_AUDIT_BYTES {
@@ -277,10 +288,12 @@ impl IntentStore {
         file.write_all(&bytes).map_err(|_| ERROR)?;
         file.sync_all().map_err(|_| ERROR)?;
         checkpoint("file-synced")?;
-        self.verify_file(&file)?;
+        self.verify()?;
+        verify_private_file(self.home(), name, &file)?;
         self.home().sync_all().map_err(|_| ERROR)?;
         checkpoint("parent-synced")?;
-        self.verify_file(&file)
+        self.verify()?;
+        verify_private_file(self.home(), name, &file)
     }
     #[cfg(test)]
     pub(super) fn test_append(

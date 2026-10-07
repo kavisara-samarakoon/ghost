@@ -5,8 +5,11 @@ import MemoryPage from "./MemoryPage.tsx";
 import ProjectsPage from "./ProjectsPage.tsx";
 import SessionsPage from "./SessionsPage.tsx";
 import GoogleAssistant from "./GoogleAssistant.tsx";
+import TodayPage from "./TodayPage.tsx";
+import type { GoogleStatus } from "./google-assistant.ts";
+import type { RecentRequest } from "./action-requests.ts";
 
-export const pageNames = ["Command", "Projects", "Sessions", "Memory", "Artifacts", "Assistant"] as const;
+export const pageNames = ["Command", "Today", "Mail", "Calendar", "Projects", "Memory", "Sessions", "Artifacts", "Automations", "Connections"] as const;
 export type DesktopPage = typeof pageNames[number];
 
 type PageProps = {
@@ -19,6 +22,7 @@ type PageProps = {
   onSelect: (alias: string) => void;
   onNavigate?: (page: Exclude<DesktopPage, "Command">) => void;
   searchInputRef: RefObject<HTMLInputElement | null>;
+  recentRequests?: RecentRequest[]; connections?: GoogleStatus | null; onConnections?: (status: GoogleStatus) => void;
 };
 
 const descriptions = {
@@ -41,7 +45,9 @@ function ProjectPicker({ projects, project, onSelect }: Pick<PageProps, "project
 export default function DesktopPages(props: PageProps) {
   const [projectQuery, setProjectQuery] = useState("");
   const { page, project, mode, projects, onSelect, notice, warnings, searchInputRef } = props;
-  if (page === "Assistant") return <GoogleAssistant />;
+  if (page === "Mail" || page === "Calendar" || page === "Connections") return <GoogleAssistant view={page === "Mail" ? "mail" : page === "Calendar" ? "calendar" : "connections"} initialStatus={props.connections} onStatus={props.onConnections} />;
+  if (page === "Today") return <TodayPage project={project} mode={mode} recent={props.recentRequests} connections={props.connections} />;
+  if (page === "Automations") return <section className="automations-page"><header className="desktop-page-header"><div><p className="page-eyebrow">Coming next · M44</p><h1>Automations</h1><p>Not enabled yet.</p></div><span className="badge">Inactive</span></header><section className="surface"><h2>You stay in control</h2><p>M44 will add user-approved scheduled and conditional workflows. No scheduler, background monitoring or automated action is active in this version.</p></section></section>;
   return <div className={`desktop-page page-${page.toLowerCase()}`}>
     <header className="desktop-page-header">
       <div><p className="page-eyebrow">{page === "Sessions" ? "Workflow continuity" : page === "Artifacts" ? "Generated work" : page === "Memory" ? "Local memory" : mode === "live-local" ? "Your local workspace" : "Static preview · Sample data"}</p><h1 tabIndex={-1}>{page}</h1><p>{descriptions[page]}</p></div>

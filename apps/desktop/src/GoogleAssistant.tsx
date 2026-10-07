@@ -6,12 +6,12 @@ import "./GoogleAssistant.css";
 
 function displayTime(value: EventTime) { return value.date_time ?? value.date ?? "Unavailable"; }
 function EventPreview({ value }: { value: EventInput }) { return <dl><dt>Summary</dt><dd>{value.summary}</dd><dt>Start</dt><dd>{displayTime(value.start)}</dd><dt>End</dt><dd>{displayTime(value.end)}</dd><dt>Location</dt><dd>{value.location ?? "None"}</dd><dt>Description</dt><dd className="google-prose">{value.description ?? "None"}</dd></dl>; }
-export default function GoogleAssistant({ client: supplied }: { client?: GoogleAssistantClient }) {
+export default function GoogleAssistant({ client: supplied, view = "all", initialStatus = null, onStatus }: { client?: GoogleAssistantClient; view?: "all" | "mail" | "calendar" | "connections"; initialStatus?: GoogleStatus | null; onStatus?: (status: GoogleStatus) => void }) {
   const [client] = useState(() => supplied ?? new GoogleAssistantClient());
-  const [status, setStatus] = useState<GoogleStatus | null>(null);
+  const [status, setStatus] = useState<GoogleStatus | null>(initialStatus);
   const [clientId, setClientId] = useState(""); const [label, setLabel] = useState("Personal Google");
   const [permissions, setPermissions] = useState<GooglePermission[]>([...readPermissions]);
-  const [connectReview, setConnectReview] = useState(false); const [accountId, setAccountId] = useState("");
+  const [connectReview, setConnectReview] = useState(false); const [accountId, setAccountId] = useState(initialStatus?.accounts[0]?.account_id ?? "");
   const [busy, setBusy] = useState(false); const [notice, setNotice] = useState("");
   const [query, setQuery] = useState(""); const [mail, setMail] = useState<MailResult | null>(null); const [digest, setDigest] = useState(false);
   const [to, setTo] = useState(""); const [cc, setCc] = useState(""); const [subject, setSubject] = useState(""); const [body, setBody] = useState("");
@@ -33,7 +33,7 @@ export default function GoogleAssistant({ client: supplied }: { client?: GoogleA
     try { await task(); } catch (error) { if (mounted.current) setNotice(googleError(error)); }
     finally { if (mounted.current) setBusy(false); }
   }
-  async function reload() { const next = await client.status(); if (mounted.current) { setStatus(next); setClientId(next.config.client_id ?? ""); setAccountId(id => next.accounts.some(a => a.account_id === id) ? id : next.accounts[0]?.account_id ?? ""); } }
+  async function reload() { const next = await client.status(); if (mounted.current) { setStatus(next); onStatus?.(next); setClientId(next.config.client_id ?? ""); setAccountId(id => next.accounts.some(a => a.account_id === id) ? id : next.accounts[0]?.account_id ?? ""); } }
   function select(id: string) { invalidate(); setAccountId(id); setMail(null); setAgenda(null); setFree(null); setContacts(null); setSelectedEvent(null); setTo(""); setCc(""); setSubject(""); setBody(""); setSummary(""); setDescription(""); setLocation(""); setStart(""); setEnd(""); setDisconnectPhrase(""); }
   async function prepare(payload: GoogleAction) { const next = await client.prepare(accountId, payload); if (mounted.current) { setPrepared(next); setConfirmation(""); requestAnimationFrame(() => document.getElementById("google-preview-title")?.scrollIntoView({ block: "start" })); } }
   function eventInput(): EventInput { return { summary, description: description || null, location: location || null,
@@ -41,13 +41,15 @@ export default function GoogleAssistant({ client: supplied }: { client?: GoogleA
   function editEvent(event: CalendarEvent) { invalidate(); setSelectedEvent(event); setSummary(event.fields.summary); setDescription(event.fields.description ?? ""); setLocation(event.fields.location ?? ""); setStart(displayTime(event.fields.start)); setEnd(displayTime(event.fields.end)); setAllDay(!!event.fields.start.date); }
   const mutationEnabled = available && !busy && !!account;
   return <section className="google-assistant" aria-labelledby="google-title">
-    <header className="desktop-page-header"><div><p className="page-eyebrow">Explicit Google access</p><h1 id="google-title">Assistant</h1><p>Read Google data on request. Review and explicitly confirm every draft, send, and calendar change.</p></div></header>
+    <header className="desktop-page-header"><div><p className="page-eyebrow">Explicit Google access</p><h1 id="google-title">{view === "all" ? "Assistant" : view === "mail" ? "Mail" : view === "calendar" ? "Calendar" : "Connections"}</h1><p>Read Google data on request. Review and explicitly confirm every draft, send, and calendar change.</p></div></header>
     {!available && <p className="page-notice">Google integration is unavailable in browser preview. Use the macOS desktop app.</p>}
     <p className="page-notice">Gmail, Calendar and Contacts requests go to Google. Mail digests are computed locally; this area never sends their content to OpenAI.</p>
     {notice && <p role="status" className="page-notice">{notice}</p>}
     {status?.credential_checks_available === false && <p className="page-notice">Credential checks are unavailable. Local account records remain visible for recovery. Unlock Keychain or explicitly retry local disconnect.</p>}
+    {(view === "all" || view === "connections") && <>
     <fieldset disabled={!available || busy} className="glass-panel google-panel"><legend>Google connection</legend>
       <button type="button" onClick={() => void perform(reload)}>Load local setup and accounts</button>
+      {status && <dl className="connection-summary"><dt>Credential backend</dt><dd>{status.connectors.find(c => c.provider === "google")?.credential_backend_supported ? "macOS Keychain" : "Unavailable / not reported"}</dd><dt>Local credential checks</dt><dd>{status.credential_checks_available ? "Available" : "Unavailable — recovery may be needed"}</dd><dt>Accounts</dt><dd>{status.accounts.filter(a => a.status === "connected").length} connected · {status.accounts.length} local records</dd></dl>}
       <label>Google Desktop OAuth client ID<input value={clientId} maxLength={256} autoComplete="off" spellCheck={false} onChange={e => { setClientId(e.target.value); setConnectReview(false); }} placeholder="Desktop client ID ending in .apps.googleusercontent.com" /></label>
       <button type="button" onClick={() => void perform(async () => { await client.saveClient(clientId); invalidate(); await reload(); setNotice("Client ID saved privately. No Google request was made."); })}>Save client ID locally</button>
       <label>Local account label<input value={label} maxLength={128} onChange={e => { setLabel(e.target.value); setConnectReview(false); }} /></label>
@@ -59,6 +61,9 @@ export default function GoogleAssistant({ client: supplied }: { client?: GoogleA
       <label>Account<select disabled={!status?.accounts.length} value={accountId} onChange={e => select(e.target.value)}><option value="">Select an account</option>{status?.accounts.map(a => <option key={a.account_id} value={a.account_id}>{a.display_label} · {a.status} · {a.account_id.slice(0, 8)}</option>)}</select></label>
       {account && <><p>{account.status} · {account.granted_permissions.map(p => permissionLabels[p]).join(", ")}</p><details><summary>Disconnect this local account</summary><p>The Google grant may remain active until revoked in Google Account settings.</p><label>Type DISCONNECT {accountId}<input value={disconnectPhrase} onChange={e => setDisconnectPhrase(e.target.value)} autoComplete="off" /></label><button type="button" disabled={disconnectPhrase !== `DISCONNECT ${accountId}`} onClick={() => void perform(async () => { const result = await client.disconnect(accountId, disconnectPhrase); select(""); await reload(); setNotice(result.notice); })}>Remove local credentials and metadata</button></details></>}
     </fieldset>
+    </>}
+    {(view === "mail" || view === "calendar") && <section className="account-toolbar"><button disabled={!available || busy} onClick={() => void perform(reload)}>Load local accounts</button><label>Google account<select disabled={busy || !available} value={accountId} onChange={e=>select(e.target.value)}><option value="">Choose account</option>{status?.accounts.map(a=><option key={a.account_id} value={a.account_id}>{a.display_label} · {a.status}</option>)}</select></label>{account && <span>{account.granted_permissions.map(p=>permissionLabels[p]).join(", ")}</span>}</section>}
+    {(view === "all" || view === "mail") && <>
     <fieldset disabled={!available || busy || !account} className="glass-panel google-panel"><legend>Mail</legend>
       <p>This reads Gmail metadata and snippets from Google. Empty search uses recent inbox messages.</p><label>Gmail query<input value={query} maxLength={512} onChange={e => setQuery(e.target.value)} placeholder="in:inbox newer_than:14d" /></label>
       <button type="button" disabled={!allows("mail_read")} onClick={() => void perform(async () => { const result = await client.search(accountId, query); if (mounted.current) setMail(result); })}>Read/search Gmail</button>
@@ -69,6 +74,8 @@ export default function GoogleAssistant({ client: supplied }: { client?: GoogleA
       <label>Subject<input value={subject} maxLength={256} onChange={e => { setSubject(e.target.value); invalidate(); }} /></label><label>Complete plain-text body<textarea value={body} maxLength={32768} rows={6} onChange={e => { setBody(e.target.value); invalidate(); }} /></label>
       <div className="google-actions">{(["create_mail_draft", "send_mail"] as const).map(action => <button type="button" key={action} disabled={!mutationEnabled || !allows(action === "send_mail" ? "mail_send" : "mail_draft")} onClick={() => void perform(() => prepare({ action, mail: { to: to.split(",").map(s => s.trim()).filter(Boolean), cc: cc.split(",").map(s => s.trim()).filter(Boolean), subject, body } }))}>{action === "send_mail" ? "Prepare Send preview" : "Prepare Save Draft preview"}</button>)}</div>
     </fieldset>
+    </>}
+    {(view === "all" || view === "calendar") && <>
     <fieldset disabled={!available || busy || !account} className="glass-panel google-panel"><legend>Primary calendar</legend>
       <p>This reads agenda/free-busy from Google. Times must be RFC3339 with an explicit offset; all-day event ends are exclusive.</p>
       <label>Window start<input value={windowStart} onChange={e => setWindowStart(e.target.value)} /></label><label>Window end<input value={windowEnd} onChange={e => setWindowEnd(e.target.value)} /></label>
@@ -83,17 +90,25 @@ export default function GoogleAssistant({ client: supplied }: { client?: GoogleA
       <label>Start<input value={start} onChange={e => { setStart(e.target.value); invalidate(); }} placeholder={allDay ? "YYYY-MM-DD" : "YYYY-MM-DDTHH:mm:ss+05:30"} /></label><label>End<input value={end} onChange={e => { setEnd(e.target.value); invalidate(); }} placeholder={allDay ? "YYYY-MM-DD (exclusive)" : "YYYY-MM-DDTHH:mm:ss+05:30"} /></label>
       <button type="button" disabled={!mutationEnabled || !allows(selectedEvent ? "calendar_event_update" : "calendar_event_create")} onClick={() => void perform(() => prepare(selectedEvent ? { action: "update_calendar_event", event_id: selectedEvent.event_id, etag: selectedEvent.etag, changes: eventChanges(selectedEvent.fields, eventInput()) } : { action: "create_calendar_event", event: eventInput() }))}>Prepare {selectedEvent ? "Update" : "Create"} Event preview</button>
     </fieldset>
+    </>}
+    {(view === "all" || view === "mail" || view === "connections") && <>
     <fieldset disabled={!available || busy || !account} className="glass-panel google-panel"><legend>Contacts — read only</legend><p>This reads at most 100 Google contacts, with up to five emails/phones each. Search runs locally on that bounded result.</p><label>Name, email or phone substring<input value={contactQuery} maxLength={128} onChange={e => setContactQuery(e.target.value)} /></label><button type="button" disabled={!allows("contacts_read")} onClick={() => void perform(async () => { const result = await client.contacts(accountId, contactQuery); if (mounted.current) setContacts(result); })}>Read/lookup contacts</button>
       {contacts && <>{contacts.truncated && <p>More contacts exist and are outside this bounded lookup.</p>}{contacts.contacts.map(c => <article className="google-result" key={c.resource_name}><strong>{c.display_name || "Unnamed contact"}</strong><p>{c.emails.join(", ")}</p><p>{c.phones.join(", ")}</p><p>{c.organization}</p></article>)}</>}
     </fieldset>
-    {prepared && <section className="glass-panel google-panel google-review" aria-labelledby="google-preview-title"><h2 id="google-preview-title">Exact Google mutation preview</h2><p>Account: {prepared.preview.account_label} · {prepared.account_id}</p>
+    </>}
+    {prepared && <GoogleMutationReview prepared={prepared} busy={busy} confirmation={confirmation} setConfirmation={setConfirmation} onDiscard={invalidate}
+      onConfirm={() => void perform(async () => { const request=prepared;setPrepared(null);setConfirmation("");const result=await client.execute(request,confirmation);if(mounted.current)setNotice(`${result.operation} completed (${result.provider_id}).${result.audit_recorded ? "" : " Completion audit needs review; do not repeat the action."}`); })} />}
+  </section>;
+}
+
+export function GoogleMutationReview({prepared,busy,confirmation,setConfirmation,onConfirm,onDiscard}:{prepared:PreparedGoogleMutation;busy:boolean;confirmation:string;setConfirmation:(value:string)=>void;onConfirm:()=>void;onDiscard:()=>void}) {
+  return <section className="glass-panel google-panel google-review" aria-labelledby="google-preview-title"><h2 id="google-preview-title">Exact Google mutation preview</h2><p>Account: {prepared.preview.account_label} · {prepared.account_id}</p>
       <p>{prepared.payload.action === "send_mail" ? "This sends this email now." : prepared.payload.action === "create_mail_draft" ? "This creates a Gmail draft. It will not send." : "This changes an event on your primary calendar."}</p>
       {prepared.preview.mail && <dl><dt>Sender</dt><dd>{prepared.preview.sender ?? "Authenticated Google mailbox (default sender)"}</dd><dt>Date</dt><dd>{new Date(prepared.created_at * 1000).toISOString()}</dd><dt>To</dt><dd>{prepared.preview.mail.to.join(", ")}</dd><dt>Cc</dt><dd>{prepared.preview.mail.cc.join(", ") || "None"}</dd><dt>Subject</dt><dd>{prepared.preview.mail.subject}</dd><dt>Complete body ({prepared.preview.body_bytes} UTF-8 bytes)</dt><dd><pre className="google-prose">{prepared.preview.mail.body}</pre></dd></dl>}
       {prepared.preview.old_event && <><h3>Old values</h3><EventPreview value={prepared.preview.old_event} /></>}{prepared.preview.new_event && <><h3>New values</h3><EventPreview value={prepared.preview.new_event} /></>}
       <p className="google-prose">Digest: {prepared.request_sha256}</p><p>Expires: {new Date(prepared.expires_at * 1000).toISOString()}</p>
       <label>Type exactly: {confirmationPhrase(prepared)}<input value={confirmation} onChange={e => setConfirmation(e.target.value)} autoComplete="off" spellCheck={false} disabled={busy} /></label>
-      <button type="button" disabled={busy || confirmation !== confirmationPhrase(prepared)} onClick={() => void perform(async () => { const request = prepared; setPrepared(null); setConfirmation(""); const result = await client.execute(request, confirmation); if (mounted.current) setNotice(`${result.operation} completed (${result.provider_id}).${result.audit_recorded ? "" : " Completion audit needs review; do not repeat the action."}`); })}>Confirm one Google action</button>
-      <button type="button" disabled={busy} onClick={invalidate}>Discard preview locally</button>
-    </section>}
-  </section>;
+      <button type="button" disabled={busy || confirmation !== confirmationPhrase(prepared)} onClick={onConfirm}>Confirm one Google action</button>
+      <button type="button" disabled={busy} onClick={onDiscard}>Discard preview locally</button>
+    </section>;
 }

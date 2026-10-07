@@ -3,11 +3,11 @@ mod context;
 pub(crate) mod ipc;
 pub(crate) mod model;
 pub(crate) mod mutations;
-mod search;
+pub(crate) mod search;
 #[cfg(unix)]
-mod storage;
+pub(crate) mod storage;
 #[cfg(not(unix))]
-mod storage {
+pub(crate) mod storage {
     use super::{
         model::{Document, Record},
         mutations::AuditEvent,
@@ -40,7 +40,7 @@ pub(crate) fn now() -> Result<i64> {
         .map(|d| d.as_secs() as i64)
         .map_err(|_| "unavailable")
 }
-fn hash(value: &impl serde::Serialize) -> Result<String> {
+pub(crate) fn hash(value: &impl serde::Serialize) -> Result<String> {
     use sha2::{Digest, Sha256};
     Ok(format!(
         "{:x}",
