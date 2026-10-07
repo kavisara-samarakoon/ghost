@@ -25,7 +25,13 @@ def forbidden_reason(path: str) -> str | None:
         for part in normalized.parts
     ):
         return "private GHOST/voice storage"
-    if normalized.name in {"personal-memory.json", ".memory-lock", "automations.json", "automation-inbox.json", ".automation-lock"}:
+    if normalized.name in {
+        "personal-memory.json",
+        ".memory-lock",
+        "automations.json",
+        "automation-inbox.json",
+        ".automation-lock",
+    }:
         return "private personal-memory/automation document"
     if normalized.name == ".env" or normalized.name.startswith(".env."):
         return "environment file (no example exceptions approved)"
