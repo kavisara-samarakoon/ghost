@@ -125,10 +125,18 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   Credentials are prohibited; sensitive memories are local-only. Durable changes
   require native Prepare -> complete Preview -> exact SHA-256 confirmation -> one
   local write -> metadata-only audit. No automatic capture or project/provider
-  migration occurs. Provider-allowed is a future policy label only: M42 memory
-  and unified context make no OpenAI calls and transmit no personal memory.
+  migration occurs. Memory search and unified context make no OpenAI calls and
+  transmit no personal memory. Jarvis may separately share only active, unexpired,
+  standard provider-allowed memory after complete outbound review and explicit Send.
   Unified context is ephemeral, bounded and data-only. Optional Google sources
   require explicit user-triggered live reads through M41 and are never persisted.
+
+- Jarvis is a finite, strict typed planner only. Outbound personal/project context
+  defaults off and is rebuilt/filtered natively; project sharing uses existing
+  allowlisted search and explicit review. Google context is structurally forbidden
+  from AI outbound envelopes. Plans never run automatically or as a batch; each
+  user-selected step delegates to its existing M31/M41/M42 native confirmation
+  gate. There is no generic execution command, shell, agent loop or active automation.
 
 ## Coding Rules
 

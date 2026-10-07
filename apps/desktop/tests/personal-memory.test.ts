@@ -24,7 +24,7 @@ test("personal form starts manual, standard and local-only", () => {
 });
 test("sensitive forces local-only and provider policy does not send",()=>{
   assert.equal(privacyChange({...blankMemory(),sharing:"provider_allowed"},"sensitive").sharing,"local_only");
-  const html=renderToStaticMarkup(React.createElement(PersonalMemory,{client:new PersonalMemoryClient(()=>false)})); assert.match(html,/future-use policy label; this version does not send it/); assert.match(html,/does not send personal memory to OpenAI/);
+  const html=renderToStaticMarkup(React.createElement(PersonalMemory,{client:new PersonalMemoryClient(()=>false)})); assert.match(html,/separately reviewed Jarvis request/); assert.match(html,/memory page never sends content/);
 });
 test("browser personal memory performs no IPC",async()=>{
   let calls=0; const client=new PersonalMemoryClient(()=>false,async<T>()=>{calls++;return {} as T;}); await assert.rejects(client.list("all")); await assert.rejects(client.prepare({action:"create_memory",memory_id:null,payload:blankMemory()})); assert.equal(calls,0);

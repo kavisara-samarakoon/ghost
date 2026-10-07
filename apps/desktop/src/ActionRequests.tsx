@@ -19,16 +19,16 @@ export function RequestReview({ request, busy, onSave, onEdit }: {
   </section>;
 }
 
-export default function ActionRequests({ projects, project, available, recent = [], onSaved }: {
+export default function ActionRequests({ projects, project, available, recent = [], onSaved, initialAction, boundProjectAlias }: {
   projects: GhostProject[]; project?: GhostProject; available: boolean;
-  recent?: RecentRequest[]; onSaved?: () => void;
+  recent?: RecentRequest[]; onSaved?: () => void; initialAction?: RequestAction; boundProjectAlias?: string;
 }) {
-  const [actionType, setActionType] = useState<ActionType>("start_session");
+  const [actionType, setActionType] = useState<ActionType>(initialAction?.action_type ?? "start_session");
   // Follow the loaded selection until the user explicitly chooses/types an alias.
-  const [alias, setAlias] = useState<string | null>(null);
+  const [alias, setAlias] = useState<string | null>(boundProjectAlias ?? null);
   const projectAlias = alias ?? project?.alias ?? "";
-  const [text, setText] = useState("");
-  const [provider, setProvider] = useState<typeof providers[number]>("codex");
+  const [text, setText] = useState(initialAction?.action_type === "start_session" ? initialAction.payload.goal : initialAction?.action_type === "add_session_note" ? initialAction.payload.note : "");
+  const [provider, setProvider] = useState<typeof providers[number]>(initialAction?.action_type === "create_handoff" ? initialAction.payload.provider : "codex");
   const [review, setReview] = useState<PreparedRequest | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);

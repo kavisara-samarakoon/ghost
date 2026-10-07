@@ -336,14 +336,15 @@ function commandView(project = sampleProjects[0], onNavigate: (page: "Projects" 
   return CommandPage({ projects: sampleProjects, project, mode: "static-preview", notice: null, warnings: [], onSelect() {}, onNavigate });
 }
 
-test("Command renders the local workflow, MVP guidance, and real page destinations", () => {
+test("Command renders the planner field, privacy defaults, and local review destinations", () => {
   mockIPC(() => assert.fail("Visiting Command must not search memory or invoke native actions"));
   const html = renderToStaticMarkup(commandView());
-  assert.match(html, /<h1[^>]*id="command-title"[^>]*>.*Command Space/s);
-  assert.match(html, /Current workflow/);
-  assert.match(html, /Suggested next steps/);
-  assert.match(html, /Local MVP status/);
-  assert.match(html, /Recommended flow/);
+  assert.match(html, /<h1[^>]*id="command-title"[^>]*>Command/);
+  assert.match(html, /Ask GHOST/);
+  assert.match(html, /Share approved personal memory/);
+  assert.match(html, /Share reviewed project context/);
+  assert.match(html, /Planner only/);
+  assert.doesNotMatch(html, /orbit-container|Command Space/);
   for (const label of ["Review Projects", "Continue Session", "Search Memory", "Review Artifacts"]) {
     assert.ok(html.includes(`aria-label="${label}"`));
   }
@@ -355,15 +356,15 @@ test("Command uses loaded snapshot values and calm placeholders without inventin
   const live = renderToStaticMarkup(CommandPage({ projects: [liveProject], project: liveProject, mode: "live-local",
     notice: null, warnings: [], onSelect() {}, onNavigate() {} }));
   assert.ok(live.includes(liveProject.name));
-  assert.ok(live.includes(liveProject.path));
-  assert.ok(live.includes(liveProject.active_session!.id));
-  assert.ok(live.includes(liveProject.recent_artifacts[0].title));
+  assert.ok(live.includes(liveProject.alias));
+  assert.match(live, /Ask GHOST/);
+  assert.doesNotMatch(live, /orbit-container/);
   assert.match(live, /Live local read-only/);
 
   const empty = renderToStaticMarkup(CommandPage({ projects: [], project: undefined, mode: "live-local",
     notice: null, warnings: [], onSelect() {}, onNavigate() {} }));
-  assert.match(empty, /No active session/);
-  assert.match(empty, /No artifact selected/);
+  assert.match(empty, /No project/);
+  assert.match(empty, /Ask GHOST/);
   assert.ok(!empty.includes("NEXORA"));
 });
 
@@ -402,7 +403,7 @@ test("Memory navigation keeps the selected project and performs no IPC", () => {
 
 test("Command, Projects, Sessions, Memory, and Artifacts all render after cockpit polish", () => {
   mockIPC(() => assert.fail("Rendering existing pages must not invoke native commands"));
-  assert.match(renderToStaticMarkup(createElement(App)), /Command Space/);
+  assert.match(renderToStaticMarkup(createElement(App)), /Ask GHOST/);
   for (const page of ["Projects", "Sessions", "Memory", "Artifacts"] as const) {
     assert.match(render(page), new RegExp(`<h1[^>]*>${page}</h1>`));
   }
@@ -441,7 +442,7 @@ test("Sessions does not mount memory search and Command and Projects still rende
   mockIPC(() => assert.fail("Rendering pages must not invoke or search memory"));
   assert.ok(!render("Sessions", sampleProjects, "live-local").includes('role="search"'));
   assert.match(render("Projects"), /id="project-filter"/);
-  assert.match(renderToStaticMarkup(createElement(App)), /Command Space/);
+  assert.match(renderToStaticMarkup(createElement(App)), /Ask GHOST/);
 });
 
 test("Sessions renders notes, goals, status and project notices as inert text", () => {

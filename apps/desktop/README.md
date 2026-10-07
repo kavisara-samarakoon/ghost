@@ -62,7 +62,7 @@ invoke CLI/orchestration, or run workflow actions. No automatic retry occurs.
 
 ## M36 — Controlled Intent
 
-The Command page offers **Prepare Interpretation → Review sanitized intent →
+The retained M36 implementation offers **Prepare Interpretation → Review sanitized intent →
 Send reviewed intent to OpenAI → Review proposal → optional Save Plan Draft**.
 Typed text stays local until Send. Voice transcripts enter the intent draft only
 through the explicit **Use transcript as intent** button; that copy is local and
@@ -87,8 +87,7 @@ be durable before credential lookup or transmission. A received proposal or save
 plan is preserved if its completion audit fails, with a warning; GHOST never retries
 or duplicates automatically. Storage rejects symlink redirection, hard links,
 unsafe permissions, and entry/descriptor identity changes. New directories use
-0700; files use 0600. Transcription and interpretation are the only two controlled
-desktop OpenAI paths; both use the native process's `OPENAI_API_KEY`, with no
+0700; files use 0600. Transcription and reviewed planning use the native process's `OPENAI_API_KEY`, with no
 credential storage, redirects, proxies, or automatic retries.
 
 ## M29 — Safe Desktop Action Requests
@@ -148,7 +147,7 @@ The Memory page retains Workspace search and adds Personal and Context views.
 Personal records are local plaintext private data in `GHOST_HOME/memory/`
 (default `~/.ghost/memory/`), protected by owner-only directory/file permissions.
 Credentials are rejected. Sensitive memories must be local-only; `provider_allowed`
-is a future-use policy label and sends nothing in M42. There is no automatic
+is consumed only by Jarvis’s separately reviewed opt-in provider request. There is no automatic
 capture, ingestion, migration, AI search or OpenAI call from memory/context.
 
 Create/update/archive/delete require a complete native preview and its exact
@@ -161,3 +160,27 @@ with at most 24 items / 48 KiB and a context hash that grants no authority. Goog
 sources default off; selecting them and clicking Build Context makes explicit
 M41 read-only Google requests. Results stay in memory and are never saved to
 personal memory or sent to OpenAI. Context is not persisted or exported.
+
+### GHOST Command and application shell
+
+Command is the primary Ask GHOST experience in a restrained sidebar shell with
+Today, Mail, Calendar, Projects, Memory, Sessions, Artifacts and Connections.
+Automations is explicitly inactive; no scheduler or background provider polling runs.
+Cmd+K focuses Command within the app. The approved logo remains unchanged.
+
+Prepare builds a complete native outbound review; a separate Send makes one
+M36-secured native OpenAI request. AI is a planner only: at most eight typed,
+untrusted proposals, with no tools, autonomous execution or Run All. Context
+sharing defaults off. Personal sharing includes only standard, active, unexpired
+provider-allowed records; project sharing uses reviewed allowlisted/redacted memory
+search. Google data never enters the AI context envelope. Local M42 context stays
+separate and ephemeral. Changed source policy invalidates an unsent review. Selected project binding stays
+local; aliases leave only in explicitly shared project items.
+
+Each selected step delegates separately to existing local pending-request, Google
+or personal-memory gates. Google writes and memory writes retain fresh native
+previews and their own exact confirmations. Calendar update remains in the direct
+Calendar page and is excluded from Jarvis v1. Mail, Calendar and Contacts remain
+explicit-click only; mounting a page makes no provider read. Voice remains reviewed
+transcription followed by a separate planning review, without continuous listening.
+Jarvis audit is metadata-only in `GHOST_HOME/desktop-jarvis-audit.jsonl`.

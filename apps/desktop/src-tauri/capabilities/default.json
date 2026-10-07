@@ -8,6 +8,7 @@
     "ghost-local-artifacts",
     "ghost-controlled-input",
     "ghost-google-assistant",
-    "ghost-personal-memory"
+    "ghost-personal-memory",
+    "ghost-jarvis"
   ]
 }

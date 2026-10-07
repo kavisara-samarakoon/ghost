@@ -1,11 +1,11 @@
 import { useEffect, useRef, useState } from "react";
-import { PersonalMemoryClient, blankMemory, privacyChange, memoryKinds, memoryPhrase, memoryError, type MemoryPayload, type MemoryRecord, type MemoryHit, type MemoryPreview, type MemoryAction } from "./personal-memory.ts";
+import { PersonalMemoryClient, blankMemory, privacyChange, memoryKinds, memoryPhrase, memoryError, type MemoryPayload, type MemoryRecord, type MemoryHit, type MemoryPreview, type MemoryAction, type MemoryOutcome } from "./personal-memory.ts";
 export function MemoryPayloadView({ record }: { record: MemoryRecord }) {
   const p = record.payload;
   return <dl className="personal-preview"><dt>Memory ID / status</dt><dd>{record.memory_id} · {record.status}</dd><dt>Kind</dt><dd>{p.kind}</dd><dt>Title</dt><dd>{p.title}</dd><dt>Complete content</dt><dd className="memory-complete">{p.content}</dd><dt>Tags</dt><dd>{p.tags.join(", ") || "None"}</dd><dt>Privacy</dt><dd>{p.sensitivity} · {p.sharing}</dd><dt>Expiration</dt><dd>{p.expires_at ?? "None"}</dd><dt>Source</dt><dd>{p.source.kind === "manual" ? "Manual" : `${p.source.project_alias} · ${p.source.relative_path}`}</dd><dt>Created / updated</dt><dd>{record.created_at} / {record.updated_at}</dd></dl>;
 }
-export default function PersonalMemory({ client }: { client: PersonalMemoryClient }) {
-  const [form, setForm] = useState<MemoryPayload>(blankMemory); const [tags, setTags] = useState("");
+export default function PersonalMemory({ client, initialPayload, onChanged }: { client: PersonalMemoryClient; initialPayload?: MemoryPayload; onChanged?: (outcome: MemoryOutcome) => void }) {
+  const [form, setForm] = useState<MemoryPayload>(() => initialPayload ?? blankMemory()); const [tags, setTags] = useState(initialPayload?.tags.join(", ") ?? "");
   const [records, setRecords] = useState<MemoryHit[]>([]); const [selected, setSelected] = useState<MemoryRecord | null>(null);
   const [offset,setOffset] = useState(0); const [reviewing,setReviewing] = useState(false);
   const [filter, setFilter] = useState("active"); const [kind, setKind] = useState<MemoryPayload["kind"] | "">(""); const [query, setQuery] = useState("");
@@ -22,7 +22,7 @@ export default function PersonalMemory({ client }: { client: PersonalMemoryClien
   const unavailable = !client.available();
   return <section className="personal-memory">
     <h2>Personal memory</h2><p>Stored only in your private GHOST_HOME as local plaintext private data. Credentials are prohibited.</p>
-    <p>Sensitive memories are local-only. GHOST does not send personal memory to OpenAI in M42. Nothing is captured automatically.</p>
+    <p>Sensitive memories are local-only. This memory page never sends content. Jarvis can share eligible approved memories only after a separate outbound review and explicit Send. Nothing is captured automatically.</p>
     {unavailable && <p role="status">Personal memory is unavailable in browser preview.</p>}
     <fieldset disabled={pending || unavailable}><legend>Review stored memories</legend>
       <label>Review filter<select value={filter} onChange={e => { invalidate(); setFilter(e.target.value); setOffset(0); setReviewing(false); setRecords([]); }}>{["active", "archived", "expired", "all"].map(f => <option key={f}>{f}</option>)}</select></label>
@@ -43,7 +43,7 @@ export default function PersonalMemory({ client }: { client: PersonalMemoryClien
       <label>Tags (comma separated, up to 12)<input value={tags} maxLength={400} onChange={e => { invalidate(); setTags(e.target.value); }} /></label>
       <label>Sensitivity<select value={form.sensitivity} onChange={e => { invalidate(); setForm(privacyChange(form, e.target.value as MemoryPayload["sensitivity"])); }}><option value="standard">standard</option><option value="sensitive">sensitive</option></select></label>
       <label>Sharing<select value={form.sharing} disabled={form.sensitivity === "sensitive"} onChange={e => edit({ sharing: e.target.value as MemoryPayload["sharing"] })}><option value="local_only">local_only</option><option value="provider_allowed">provider_allowed</option></select></label>
-      <p>Provider allowed is a future-use policy label; this version does not send it.</p>
+      <p>Provider allowed permits standard, active memories in a separately reviewed Jarvis request. This page does not send them.</p>
       <label>Expiration (optional RFC3339)<input value={form.expires_at ?? ""} maxLength={40} placeholder="2027-01-01T00:00:00Z" onChange={e => edit({ expires_at: e.target.value || null })} /></label>
       <label>Source<select value={form.source.kind} onChange={e => edit({ source: e.target.value === "manual" ? { kind: "manual" } : { kind: "project_reference", project_alias: "", relative_path: "" } })}><option value="manual">manual</option><option value="project_reference">project_reference</option></select></label>
       {form.source.kind === "project_reference" && <>
@@ -57,7 +57,7 @@ export default function PersonalMemory({ client }: { client: PersonalMemoryClien
       {preview.action === "delete_memory" && <p>Removed from GHOST local memory after confirmation. Deleting is not a cryptographic disk erase; backups or filesystem snapshots may retain bytes.</p>}
       <p>Expires: {new Date(preview.expires_at * 1000).toISOString()}</p><code>{memoryPhrase(preview)}</code>
       <label>Exact confirmation<input value={confirmation} disabled={pending} autoComplete="off" spellCheck={false} onChange={e => setConfirmation(e.target.value)} /></label>
-      <button disabled={pending || confirmation !== memoryPhrase(preview)} onClick={() => void run(async () => { const p = preview; const phrase = confirmation; setPreview(null); setConfirmation(""); const result = await client.execute(p, phrase); if (mounted.current) { setSelected(null); setRecords([]); setForm(blankMemory()); setTags(""); setFeedback(result.audit_recorded ? (p.action === "delete_memory" ? "Removed from GHOST local memory." : "Local memory changed.") : "Local memory changed, but completion audit needs review. Do not repeat the mutation."); } })}>Confirm local {preview.action.replace(/_/g, " ")}</button>
+      <button disabled={pending || confirmation !== memoryPhrase(preview)} onClick={() => void run(async () => { const p = preview; const phrase = confirmation; setPreview(null); setConfirmation(""); const result = await client.execute(p, phrase); if (mounted.current) onChanged?.(result); if (mounted.current) { setSelected(null); setRecords([]); setForm(blankMemory()); setTags(""); setFeedback(result.audit_recorded ? (p.action === "delete_memory" ? "Removed from GHOST local memory." : "Local memory changed.") : "Local memory changed, but completion audit needs review. Do not repeat the mutation."); } })}>Confirm local {preview.action.replace(/_/g, " ")}</button>
     </section>}
     <p role="status" aria-live="polite">{feedback}</p>
   </section>;

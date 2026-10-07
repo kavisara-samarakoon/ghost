@@ -1,6 +1,7 @@
 mod connectors;
 mod credentials;
 mod intent;
+mod jarvis;
 mod memory;
 mod snapshot;
 mod voice;
@@ -148,7 +149,11 @@ pub fn run() {
     tauri::Builder::default()
         .manage(connectors::assistant::runtime::AssistantState::default())
         .manage(memory::mutations::MemoryState::default())
+        .manage(jarvis::interpret::JarvisState::default())
         .invoke_handler(tauri::generate_handler![
+            jarvis::ipc::get_jarvis_capabilities,
+            jarvis::ipc::prepare_jarvis_request,
+            jarvis::ipc::interpret_jarvis_request,
             memory::ipc::get_personal_memory_status,
             memory::ipc::list_personal_memories,
             memory::ipc::search_personal_memory,

@@ -1,6 +1,6 @@
 //! Reviewed human text becomes an inert proposal. This module has no execution bridge.
 #[cfg(unix)]
-mod storage;
+pub(crate) mod storage;
 #[cfg(test)]
 mod tests;
 
@@ -390,7 +390,7 @@ impl AuditEvent {
         Ok(event)
     }
 }
-fn credential(value: Option<String>) -> Result<String, &'static str> {
+pub(crate) fn credential(value: Option<String>) -> Result<String, &'static str> {
     let key = value.ok_or("credential")?;
     if key.is_empty() || key.len() > 1024 || !key.bytes().all(|b| (0x21..=0x7e).contains(&b)) {
         return Err("credential");
@@ -456,7 +456,7 @@ fn request_body(review: &PreparedIntent) -> Value {
         "type":"json_schema","name":"ghost_intent_proposal","strict":true,"schema":schema()}},
         "max_output_tokens":1200,"store":false})
 }
-fn client() -> Result<Client, &'static str> {
+pub(crate) fn client() -> Result<Client, &'static str> {
     Client::builder()
         .https_only(true)
         .redirect(reqwest::redirect::Policy::none())
@@ -472,13 +472,21 @@ fn build_request(
     review: &PreparedIntent,
     key: &str,
 ) -> Result<Request, &'static str> {
+    build_structured_request(client, &request_body(review), key)
+}
+
+pub(crate) fn build_structured_request(
+    client: &Client,
+    body: &Value,
+    key: &str,
+) -> Result<Request, &'static str> {
     let mut authorization = reqwest::header::HeaderValue::from_str(&format!("Bearer {key}"))
         .map_err(|_| "credential")?;
     authorization.set_sensitive(true);
     client
         .post(ENDPOINT)
         .header(reqwest::header::AUTHORIZATION, authorization)
-        .json(&request_body(review))
+        .json(body)
         .build()
         .map_err(|_| "service")
 }
@@ -504,7 +512,7 @@ enum Output {
 enum Content {
     OutputText { text: String },
 }
-fn parse_response(
+pub(crate) fn parse_response(
     status: u16,
     length: Option<u64>,
     body: impl Read,
@@ -557,6 +565,14 @@ fn parse_response(
 fn send_openai(review: &PreparedIntent, key: &str) -> Result<String, &'static str> {
     let client = client()?;
     let request = build_request(&client, review, key)?;
+    send_request(&client, request)
+}
+pub(crate) fn send_structured(body: &Value, key: &str) -> Result<String, &'static str> {
+    let client = client()?;
+    let request = build_structured_request(&client, body, key)?;
+    send_request(&client, request)
+}
+fn send_request(client: &Client, request: Request) -> Result<String, &'static str> {
     let response = client.execute(request).map_err(|_| "transport")?;
     parse_response(
         response.status().as_u16(),

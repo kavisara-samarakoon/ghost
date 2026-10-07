@@ -80,6 +80,7 @@ command!(
                 .count(),
             expired: records.iter().filter(|r| r.expired(now)).count(),
             plaintext: true,
+            // These memory commands never transmit; Jarvis has a separate explicit opt-in gate.
             provider_transmission: false,
         })
     }
