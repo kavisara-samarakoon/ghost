@@ -1,6 +1,7 @@
 mod connectors;
 mod credentials;
 mod intent;
+mod memory;
 mod snapshot;
 mod voice;
 use snapshot::actions::{Action, ActionState};
@@ -146,7 +147,15 @@ fn reveal_ghost_artifact(
 pub fn run() {
     tauri::Builder::default()
         .manage(connectors::assistant::runtime::AssistantState::default())
+        .manage(memory::mutations::MemoryState::default())
         .invoke_handler(tauri::generate_handler![
+            memory::ipc::get_personal_memory_status,
+            memory::ipc::list_personal_memories,
+            memory::ipc::search_personal_memory,
+            memory::ipc::get_personal_memory,
+            memory::ipc::prepare_personal_memory_mutation,
+            memory::ipc::execute_personal_memory_mutation,
+            memory::ipc::build_unified_context,
             load_ghost_snapshot,
             open_ghost_artifact,
             reveal_ghost_artifact,

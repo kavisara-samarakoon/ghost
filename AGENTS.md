@@ -121,6 +121,15 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
   untrusted proposals only; a separate click may save an inert M34 plan draft,
   which still requires manual CLI review and fresh execution confirmation.
 
+- Personal memory is separate local plaintext private data under GHOST_HOME/memory.
+  Credentials are prohibited; sensitive memories are local-only. Durable changes
+  require native Prepare -> complete Preview -> exact SHA-256 confirmation -> one
+  local write -> metadata-only audit. No automatic capture or project/provider
+  migration occurs. Provider-allowed is a future policy label only: M42 memory
+  and unified context make no OpenAI calls and transmit no personal memory.
+  Unified context is ephemeral, bounded and data-only. Optional Google sources
+  require explicit user-triggered live reads through M41 and are never persisted.
+
 ## Coding Rules
 
 - Keep Python functions small, typed, and beginner-readable.

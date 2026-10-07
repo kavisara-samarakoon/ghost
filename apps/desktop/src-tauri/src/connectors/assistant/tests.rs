@@ -1448,3 +1448,58 @@ mod private_disk {
         assert!(store.audit(&event).is_err());
     }
 }
+
+#[test]
+fn m42_context_bridge_enforces_every_selected_read_permission_before_network() {
+    let mut runtime = Runtime::default();
+    let mut a = assistant(&mut runtime, vec![Permission::MailRead]);
+    let id = a.disk.accounts[0].id();
+    let result = super::ipc::read_selected(&mut a, id, "synthetic", true, false, true, None);
+    assert_eq!(result.err(), Some("permission_missing"));
+    assert!(a.transport.calls.is_empty());
+    let result =
+        super::ipc::read_selected(&mut a, id, "synthetic", false, false, false, None).unwrap();
+    assert!(result.0.is_none() && result.1.is_none() && result.2.is_none());
+    assert!(a.transport.calls.is_empty());
+}
+#[test]
+fn m42_context_bridge_uses_only_bounded_m41_read_operations() {
+    let mut runtime = Runtime::default();
+    let mut a = assistant(
+        &mut runtime,
+        vec![
+            Permission::MailRead,
+            Permission::CalendarRead,
+            Permission::ContactsRead,
+        ],
+    );
+    let id = a.disk.accounts[0].id();
+    a.transport.replies.extend([
+        reply(json!({"messages":[]})),
+        reply(json!({"items":[]})),
+        reply(json!({"connections":[]})),
+    ]);
+    let window = Window {
+        start: "2026-10-10T00:00:00Z".into(),
+        end: "2026-10-11T00:00:00Z".into(),
+    };
+    let (m, c, p) =
+        super::ipc::read_selected(&mut a, id, "synthetic", true, true, true, Some(window)).unwrap();
+    assert!(
+        m.unwrap().messages.is_empty()
+            && c.unwrap().events.is_empty()
+            && p.unwrap().contacts.is_empty()
+    );
+    assert_eq!(a.transport.calls.len(), 3);
+    assert!(a
+        .transport
+        .calls
+        .iter()
+        .all(|(method, _, body, _)| method == "GET" && body.is_none()));
+    assert!(a.transport.calls[0].1.contains("maxResults=5"));
+    assert!(a.transport.calls[1].1.contains("maxResults=5"));
+    assert!(a.transport.calls[2].1.contains("personFields="));
+    let audit = serde_json::to_string(&*a.disk.events.borrow()).unwrap();
+    assert!(!audit.contains("synthetic"));
+    assert!(!audit.contains("context"));
+}

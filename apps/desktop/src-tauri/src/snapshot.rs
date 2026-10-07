@@ -2,7 +2,7 @@
 pub mod actions;
 mod artifacts;
 mod names;
-mod reader;
+pub(crate) mod reader;
 pub mod requests;
 pub mod search;
 mod session;
@@ -176,6 +176,58 @@ fn valid_alias(alias: &str) -> bool {
         && alias
             .bytes()
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+}
+
+pub(crate) fn memory_reference_path(alias: &str, path: &str) -> bool {
+    valid_alias(alias) && names::search_path(path)
+}
+
+/// Provenance uses the same registry, workspace identity and descriptor allowlist as search.
+pub(crate) fn validate_memory_reference(
+    home: &Path,
+    alias: &str,
+    path: &str,
+) -> Result<(), &'static str> {
+    if !memory_reference_path(alias, path) {
+        return Err("invalid_source");
+    }
+    let mut budget = ReadBudget::search();
+    let root = Directory::open(home)?.ok_or("invalid_source")?;
+    let registry =
+        read_yaml::<Registry>(&root, "projects.yaml", &mut budget)?.ok_or("invalid_source")?;
+    if registry.version != 1 || registry.projects.len() > MAX_PROJECTS {
+        return Err("invalid_source");
+    }
+    let project = registry
+        .projects
+        .iter()
+        .find(|p| p.alias == alias)
+        .ok_or("invalid_source")?;
+    if registry
+        .projects
+        .iter()
+        .filter(|p| p.alias == alias || p.path == project.path)
+        .count()
+        != 1
+    {
+        return Err("invalid_source");
+    }
+    let project_root = Directory::open(&project.path)?.ok_or("invalid_source")?;
+    let mut workspace = project_root.child(".ghost")?.ok_or("invalid_source")?;
+    let identity =
+        read_yaml::<Project>(&workspace, "project.yaml", &mut budget)?.ok_or("invalid_source")?;
+    if identity.alias != alias || identity.path != project.path {
+        return Err("invalid_source");
+    }
+    let mut parts = path.split('/').peekable();
+    while let Some(part) = parts.next() {
+        if parts.peek().is_none() {
+            workspace.read(part, &mut budget)?.ok_or("invalid_source")?;
+        } else {
+            workspace = workspace.child(part)?.ok_or("invalid_source")?;
+        }
+    }
+    Ok(())
 }
 
 fn preview(text: &str) -> Option<String> {
