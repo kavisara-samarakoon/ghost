@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { isTauri } from "@tauri-apps/api/core";
 import { loadGhostSnapshot, selectProject, type GhostProject, type GhostSnapshot, type SnapshotState } from "./ghost-snapshot";
 import DesktopPages, { pageNames, type DesktopPage } from "./DesktopPages";
 import { sampleProjects } from "./preview-projects";
@@ -314,7 +315,7 @@ function App() {
 
         <div className="nav-status" role="status">
           <span className="status-dot" />
-          <span>{live ? "Local \u00b7 Secure" : "Static preview"}</span>
+          <span>{activePage === "Assistant" && isTauri() ? "Google · Explicit access" : live ? "Local \u00b7 Secure" : "Static preview"}</span>
         </div>
 
         <div className="nav-user-icon" aria-label="Settings">
@@ -349,7 +350,7 @@ function App() {
       {/* ---- Safety strip ---- */}
       <div className="status-strip">
         <span className="status-strip-text">
-          {`${live ? "Local" : "Static preview"} · No shell/CLI execution · Pending request drafts only · No workflow mutation`}
+          {`${live ? "Local" : "Static preview"} · No shell/CLI execution · Local workflow requests remain drafts · Google changes require preview and confirmation`}
         </span>
       </div>
     </div>

@@ -112,7 +112,12 @@ Until the real logo asset is added, use a simple temporary text or letter mark o
 - The desktop performs no shell/CLI execution or automatic GitHub mutation,
   publishing, merging, deployment, tagging, or release. Snapshot/search and Action
   Requests remain offline. Desktop network access is limited to separately confirmed
-  voice transcription and intent interpretation. Intent interpretation produces
+  voice transcription, intent interpretation, and explicit native Google Assistant
+  operations. Google credentials stay native/Keychain-only; Gmail draft/send and
+  primary-calendar create/update require immutable Prepare -> Preview -> exact
+  confirmation -> one allowlisted request -> metadata-only audit. Contacts are
+  read-only. Google data never enters OpenAI through this integration.
+  Intent interpretation produces
   untrusted proposals only; a separate click may save an inert M34 plan draft,
   which still requires manual CLI review and fresh execution confirmation.
 

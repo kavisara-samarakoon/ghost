@@ -1,0 +1,17 @@
+.google-assistant { max-width: 1040px; margin: 0 auto; padding: 28px; }
+.google-panel { margin: 24px 0; padding: 24px; border: 1px solid rgba(255,255,255,.12); border-radius: 16px; min-width: 0; }
+.google-panel legend { padding: 0 10px; font-weight: 600; color: #f1f5fa; }
+.google-panel label { display: grid; gap: 8px; margin: 16px 0; color: #dbe4f1; }
+.google-panel input:not([type=checkbox]), .google-panel textarea, .google-panel select { width: 100%; box-sizing: border-box; padding: 11px 12px; border: 1px solid rgba(255,255,255,.16); border-radius: 8px; background: #0b1422; color: #f5f8ff; font: inherit; }
+.google-panel button { padding: 10px 14px; margin: 4px 8px 4px 0; border: 1px solid rgba(77,216,232,.25); border-radius: 8px; background: rgba(77,216,232,.08); color: #e2f7fa; cursor: pointer; }
+.google-panel button:disabled { opacity: .4; cursor: default; }
+.google-panel input:focus-visible, .google-panel textarea:focus-visible, .google-panel button:focus-visible, .google-panel select:focus-visible { outline: 2px solid #4dd8e8; outline-offset: 3px; }
+.google-panel .google-check { display: flex; align-items: center; gap: 10px; }
+.google-panel p { color: #a8b8cd; line-height: 1.6; }
+.google-panel h3 { margin-top: 24px; color: #eef4fc; }
+.google-review { border: 1px solid rgba(77,216,232,.3); padding: 20px; border-radius: 12px; margin-top: 20px; }
+.google-prose { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+.google-result { border-top: 1px solid rgba(255,255,255,.1); padding: 18px 0; }
+.google-panel dl dt { color: #a8b8cd; margin-top: 14px; }
+.google-panel dl dd { margin: 6px 0 0; color: #eef4fc; overflow-wrap: anywhere; }
+@media (max-width: 700px) { .google-assistant { padding: 16px; } .google-panel { padding: 16px; } }

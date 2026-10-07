@@ -145,6 +145,7 @@ fn reveal_ghost_artifact(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .manage(connectors::assistant::runtime::AssistantState::default())
         .invoke_handler(tauri::generate_handler![
             load_ghost_snapshot,
             open_ghost_artifact,
@@ -155,7 +156,18 @@ pub fn run() {
             transcribe_ghost_voice,
             prepare_ghost_intent,
             interpret_ghost_intent,
-            save_ghost_intent_plan
+            save_ghost_intent_plan,
+            connectors::assistant::ipc::get_google_assistant_status,
+            connectors::assistant::ipc::save_google_client_id,
+            connectors::assistant::ipc::connect_google,
+            connectors::assistant::ipc::search_google_mail,
+            connectors::assistant::ipc::get_google_mail_digest,
+            connectors::assistant::ipc::list_google_agenda,
+            connectors::assistant::ipc::find_google_free_time,
+            connectors::assistant::ipc::lookup_google_contacts,
+            connectors::assistant::ipc::prepare_google_mutation,
+            connectors::assistant::ipc::execute_google_mutation,
+            connectors::assistant::ipc::disconnect_google_account
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

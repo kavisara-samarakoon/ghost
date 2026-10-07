@@ -110,6 +110,9 @@ impl Account {
     pub(crate) fn permissions(&self) -> &[Permission] {
         &self.granted_permissions
     }
+    pub(super) fn email(&self) -> Option<&str> {
+        self.email.as_deref()
+    }
     pub(crate) fn updated(
         &self,
         label: String,
@@ -137,6 +140,15 @@ impl Account {
     }
     pub(crate) fn allows(&self, permission: Permission) -> bool {
         self.status == AccountStatus::Connected && self.granted_permissions.contains(&permission)
+    }
+    pub(super) fn disconnected(&self, now: u64) -> Result<Self, ConnectorError> {
+        self.updated(
+            self.display_label.clone(),
+            self.email.clone(),
+            self.granted_permissions.clone(),
+            AccountStatus::Disconnected,
+            now.max(self.updated_at),
+        )
     }
     pub(super) fn contains_secret(&self, value: &str) -> bool {
         self.display_label.contains(value)

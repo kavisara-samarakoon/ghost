@@ -1,0 +1,4 @@
+[[permission]]
+identifier = "ghost-google-assistant"
+description = "User-triggered Google setup, reads, and immutable preview/confirmation mutations. Native commands restrict the main window, providers, scopes and endpoints."
+commands.allow = ["get_google_assistant_status", "save_google_client_id", "connect_google", "search_google_mail", "get_google_mail_digest", "list_google_agenda", "find_google_free_time", "lookup_google_contacts", "prepare_google_mutation", "execute_google_mutation", "disconnect_google_account"]

@@ -1,5 +1,19 @@
 # GHOST Desktop — Command Space
 
+## Google Assistant (M41)
+
+In the macOS app, open **Assistant**. Create a Google Cloud project, enable the
+Gmail, Calendar and People APIs, configure OAuth consent/testing with your account
+as a test user, and create a **Desktop app** OAuth client. Enter only its client ID
+in Assistant and save it locally; do not import OAuth JSON or use `.env` files.
+Review selected GHOST permissions before opening Google consent. Read capabilities
+are selected initially; writes require opt-in and a separate exact preview/confirmation.
+Configuration/accounts/audits stay under `GHOST_HOME/connectors/`; refresh tokens
+use native Keychain and access tokens remain in memory. Google reads/writes are
+explicit network operations; mail digests are local and never sent to OpenAI.
+Local disconnect removes credentials and metadata; revoke any remaining grant
+separately in Google Account settings. Live Google/Keychain testing remains an owner action.
+
 Current source version is GHOST v0.5.0-alpha (`0.5.0-alpha` in package/Tauri/Cargo).
 The desktop reviews projects, active sessions, memory, and artifacts through a
 read-only snapshot. Native actions include click-only Open/Reveal for approved
