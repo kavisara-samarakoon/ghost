@@ -24,6 +24,9 @@ SPEC.loader.exec_module(guard)
 IGNORE_PROBES = [
     ".ghost/private.json",
     "personal-memory.json",
+    "automations.json",
+    "automation-inbox.json",
+    ".automation-lock",
     "nested/.memory-lock",
     "nested/personal-memory.json",
     "nested/memory-audit.jsonl",

@@ -62,3 +62,8 @@ recordings/
 personal-memory.json
 .memory-lock
 GHOST_HOME/
+
+# Private M44 attention state (never source modules).
+automations.json
+automation-inbox.json
+.automation-lock

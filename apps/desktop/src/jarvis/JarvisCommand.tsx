@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type RefObject } from "react";
 import { JarvisClient, noSharing, jarvisError, type JarvisReview, type JarvisProposal } from "./jarvis.ts";
 import JarvisPlan from "./JarvisPlan.tsx";
 import VoiceInput from "../VoiceInput.tsx";
+import type { CommandPrefill } from "../automations.ts";
 import type { GhostProject, GhostSnapshot } from "../ghost-snapshot.ts";
 export function OutboundReview({ review, busy, onSend, onDismiss }: { review: JarvisReview; busy: boolean; onSend: () => void; onDismiss: () => void }) {
   return <section className="review-panel" aria-label="Provider review"><div className="section-heading"><h2>Review what leaves your Mac</h2><span className="badge">OpenAI · {review.outbound_bytes.toLocaleString()} bytes</span></div>
@@ -13,12 +14,17 @@ export function OutboundReview({ review, busy, onSend, onDismiss }: { review: Ja
     <p>{review.safety_notice}</p><div className="button-row"><button className="btn-primary" disabled={busy} onClick={onSend}>Send reviewed request to OpenAI</button><button disabled={busy} onClick={onDismiss}>Discard review</button></div>
   </section>;
 }
-export default function JarvisCommand({ projectAlias, projects, mode, inputRef, client: supplied, onRequestSaved }: { projectAlias: string | null; projects: GhostProject[]; mode: GhostSnapshot["mode"]; inputRef?: RefObject<HTMLTextAreaElement | null>; client?: JarvisClient; onRequestSaved?: () => void }) {
+export default function JarvisCommand({ projectAlias, projects, mode, inputRef, client: supplied, onRequestSaved, prefill, onPrefillConsumed }: { projectAlias: string | null; projects: GhostProject[]; mode: GhostSnapshot["mode"]; inputRef?: RefObject<HTMLTextAreaElement | null>; client?: JarvisClient; onRequestSaved?: () => void; prefill?: CommandPrefill | null; onPrefillConsumed?: () => void }) {
   const [client] = useState(() => supplied ?? new JarvisClient()); const [command, setCommand] = useState(""); const [sharing, setSharing] = useState({ ...noSharing }); const [query, setQuery] = useState("");
   const [review, setReview] = useState<JarvisReview | null>(null); const [proposal, setProposal] = useState<JarvisProposal | null>(null);
   const [busy, setBusy] = useState(false); const [sending,setSending] = useState(false); const [message, setMessage] = useState(""); const inFlight = useRef(false); const mounted = useRef(true);
   useEffect(() => { mounted.current = true; return () => { mounted.current = false; client.invalidate(); }; }, [client]);
   useEffect(() => { client.invalidate(); setReview(null); }, [client, projectAlias]);
+  useEffect(() => {
+    if (!prefill || !client.available) return;
+    client.invalidate(); setCommand(prefill.text); setSharing({ ...noSharing }); setQuery(""); setReview(null); setProposal(null); setMessage("");
+    onPrefillConsumed?.();
+  }, [client, prefill, onPrefillConsumed]);
   function invalidate() { client.invalidate(); setReview(null); setProposal(null); setMessage(""); }
   async function perform(work: () => Promise<void>) { if (inFlight.current) return; inFlight.current = true; setBusy(true); setMessage(""); try { await work(); } catch (error) { if (mounted.current) setMessage(jarvisError(error)); } finally { inFlight.current = false; if (mounted.current) setBusy(false); } }
   return <section className="jarvis-workspace" onKeyDown={event => { if (event.key === "Escape" && !busy && review) { client.invalidate(); setReview(null); event.stopPropagation(); } }}>

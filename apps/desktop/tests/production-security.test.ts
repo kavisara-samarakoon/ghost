@@ -25,9 +25,9 @@ test("production CSP permits only bundled resources, local audio and Tauri IPC",
 test("main-window capability surface grants no generic shell, HTTP, filesystem or remote access", () => {
   const capability = JSON.parse(readFileSync(new URL("../src-tauri/capabilities/default.json", import.meta.url), "utf8"));
   assert.deepEqual(capability.windows, ["main"]);
-  assert.deepEqual(capability.permissions, ["core:default", "ghost-local-artifacts", "ghost-controlled-input", "ghost-google-assistant", "ghost-personal-memory", "ghost-jarvis"]);
+  assert.deepEqual(capability.permissions, ["core:default", "ghost-local-artifacts", "ghost-controlled-input", "ghost-google-assistant", "ghost-personal-memory", "ghost-jarvis", "ghost-automations"]);
   assert.equal(capability.remote, undefined);
-  const permissionText = ["ghost-local-artifacts.toml", "ghost-controlled-input.toml", "ghost-google-assistant.toml", "ghost-personal-memory.toml", "ghost-jarvis.toml"]
+  const permissionText = ["ghost-local-artifacts.toml", "ghost-controlled-input.toml", "ghost-google-assistant.toml", "ghost-personal-memory.toml", "ghost-jarvis.toml", "ghost-automations.toml"]
     .map(name => readFileSync(new URL(`../src-tauri/permissions/${name}`, import.meta.url), "utf8")).join("\n");
   assert.doesNotMatch(permissionText, /plugin-shell|plugin-http|plugin-fs|apply_|run_orchestration/);
   assert.match(permissionText, /execute_google_mutation/);

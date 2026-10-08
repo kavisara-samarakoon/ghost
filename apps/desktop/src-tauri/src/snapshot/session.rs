@@ -114,3 +114,29 @@ fn read(
         note_preview,
     }))
 }
+
+// No notes/artifacts/content preview: only the existing pointed session metadata.
+pub(super) fn automation_has_active_session(
+    workspace: &Directory,
+    alias: &str,
+    budget: &mut ReadBudget,
+) -> Result<bool, &'static str> {
+    let Some(pointer) = read_yaml::<Pointer>(workspace, "active-session.yaml", budget)? else {
+        return Ok(false);
+    };
+    if pointer.project_alias != alias || !names::session_id(&pointer.id) {
+        return Err("invalid_source");
+    }
+    let sessions = workspace.child("sessions")?.ok_or("invalid_source")?;
+    let folder = sessions.child(&pointer.id)?.ok_or("invalid_source")?;
+    let record = read_yaml::<Record>(&folder, "session.yaml", budget)?.ok_or("invalid_source")?;
+    if record.id != pointer.id
+        || record.project_alias != alias
+        || record.status != "active"
+        || record.closed_at.is_some()
+        || record.goal.trim().is_empty()
+    {
+        return Err("invalid_source");
+    }
+    Ok(true)
+}

@@ -383,6 +383,19 @@ fn read_project(
     result
 }
 
+// M44 exposes only finite local facts, never project text or arbitrary paths.
+pub(crate) fn automation_project_no_active_session(
+    home: &Path,
+    alias: &str,
+) -> Result<bool, &'static str> {
+    let mut budget = ReadBudget::search();
+    let workspace = registered_workspace(home, alias, &mut budget)?;
+    session::automation_has_active_session(&workspace, alias, &mut budget).map(|active| !active)
+}
+pub(crate) fn automation_recent_pending_requests(home: &Path) -> Result<bool, &'static str> {
+    let home = Directory::open(home)?.ok_or("invalid_source")?;
+    Ok(!requests::recent(&home, &mut ReadBudget::default())?.is_empty())
+}
 #[cfg(all(test, unix))]
 mod tests;
 
