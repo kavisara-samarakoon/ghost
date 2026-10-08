@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type RefObject } from "react";
-import { JarvisClient, noSharing, jarvisError, type JarvisReview, type JarvisProposal } from "./jarvis.ts";
+import { JarvisClient, noSharing, jarvisError, adoptTranscript, type JarvisReview, type JarvisProposal } from "./jarvis.ts";
 import JarvisPlan from "./JarvisPlan.tsx";
 import VoiceInput from "../VoiceInput.tsx";
 import type { CommandPrefill } from "../automations.ts";
@@ -26,10 +26,19 @@ export default function JarvisCommand({ projectAlias, projects, mode, inputRef, 
     onPrefillConsumed?.();
   }, [client, prefill, onPrefillConsumed]);
   function invalidate() { client.invalidate(); setReview(null); setProposal(null); setMessage(""); }
+  function useTranscript(text: string) {
+    const adoption = adoptTranscript(client, text, inFlight.current);
+    if (adoption.error !== null) { setMessage(adoption.error); return; }
+    const draft = adoption.draft;
+    setCommand(draft.command); setSharing(draft.sharing); setQuery(draft.query); setReview(draft.review); setProposal(draft.proposal);
+    setMessage("Transcript copied to the editable Ask GHOST draft. Context sharing is off. Review or edit it, then Prepare and review a separate planning request.");
+    inputRef?.current?.focus();
+  }
   async function perform(work: () => Promise<void>) { if (inFlight.current) return; inFlight.current = true; setBusy(true); setMessage(""); try { await work(); } catch (error) { if (mounted.current) setMessage(jarvisError(error)); } finally { inFlight.current = false; if (mounted.current) setBusy(false); } }
   return <section className="jarvis-workspace" onKeyDown={event => { if (event.key === "Escape" && !busy && review) { client.invalidate(); setReview(null); event.stopPropagation(); } }}>
     <form onSubmit={event => { event.preventDefault(); void perform(async () => { const next = await client.prepare({ command, project_alias: projectAlias, context_query: sharing.personal_memory || sharing.project_memory ? query : null, sharing }); if (mounted.current) { setProposal(null); setReview(next); } }); }}>
       <label className="ask-label" htmlFor="ask-ghost">Ask GHOST</label><textarea id="ask-ghost" ref={inputRef} autoComplete="off" spellCheck={false} placeholder="What would you like to work on?" value={command} rows={3} maxLength={8192} disabled={busy || !client.available} onChange={event => { invalidate(); setCommand(event.target.value); }} />
+      <VoiceInput compact onUseTranscript={useTranscript} transcriptTarget={{ available: client.available, busy, replacesDraft: command.length > 0 }} />
       <div className="command-sharing"><span>AI context · off by default</span><label><input type="checkbox" checked={sharing.personal_memory} disabled={busy || !client.available} onChange={e => { invalidate(); setSharing(s => ({ ...s, personal_memory: e.target.checked })); }} />Share approved personal memory</label><label><input type="checkbox" checked={sharing.project_memory} disabled={busy || !client.available} onChange={e => { invalidate(); setSharing(s => ({ ...s, project_memory: e.target.checked })); }} />Share reviewed project context</label></div>
       {sharing.personal_memory && <p className="sharing-policy">Only standard, active, unexpired provider-allowed personal memories are eligible.</p>}
       {(sharing.personal_memory || sharing.project_memory) && <label>Context search query<input value={query} maxLength={120} disabled={busy} onChange={e => { invalidate(); setQuery(e.target.value); }} placeholder="e.g. meeting preference, API decision" /></label>}
@@ -40,6 +49,5 @@ export default function JarvisCommand({ projectAlias, projects, mode, inputRef, 
     {review && <OutboundReview review={review} busy={busy} onDismiss={() => { client.invalidate(); setReview(null); }} onSend={() => void perform(async () => { const current = review; setReview(null); setSending(true); try { const result = await client.send(current); if (mounted.current) { setProposal(result); if (!result.audit_recorded) setMessage("Proposal received; completion audit needs review. No resend occurred."); } } finally { if(mounted.current)setSending(false); } })} />}
     {proposal && <JarvisPlan key={proposal.proposal_sha256} proposal={proposal} projects={projects} currentProject={projectAlias} mode={mode} onRequestSaved={onRequestSaved} />}
     {message && <p className="notice" role="status" aria-live="polite">{message}</p>}
-    <details className="voice-disclosure"><summary>Use reviewed voice transcription</summary><VoiceInput onUseTranscript={text => { if (!inFlight.current) { invalidate(); setCommand(text); } }} /></details>
   </section>;
 }

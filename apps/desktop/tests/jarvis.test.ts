@@ -5,7 +5,8 @@ import { registerHooks } from "node:module";
 import ts from "typescript";
 import React,{ Children,isValidElement,type ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { JarvisClient, noSharing, memorySuggestion, localRequest, googleMutation, jarvisError, type JarvisReview,type JarvisProposal,type JarvisStep } from "../src/jarvis/jarvis.ts";
+import { JarvisClient, noSharing, memorySuggestion, localRequest, googleMutation, jarvisError, adoptTranscript, type JarvisReview,type JarvisProposal,type JarvisStep } from "../src/jarvis/jarvis.ts";
+import { MAX_COMMAND_BYTES, utf8Bytes } from "../src/transcript-handoff.ts";
 import { GoogleAssistantClient,confirmationPhrase,type PreparedGoogleMutation } from "../src/google-assistant.ts";
 registerHooks({resolve(specifier,context,next){if(context.parentURL?.includes("/src/")&&specifier.startsWith("./")&&!/\.[a-z]+$/.test(specifier))return next(specifier+(existsSync(new URL(specifier+".tsx",context.parentURL))?".tsx":".ts"),context);return next(specifier,context);},load(url,context,next){if(/\.(css|png)$/.test(url))return{format:"module",shortCircuit:true,source:`export default ${JSON.stringify(url)};`};if(url.endsWith(".tsx"))return{format:"module",shortCircuit:true,source:ts.transpileModule(readFileSync(new URL(url),"utf8"),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2020}}).outputText};return next(url,context);}});
 const {default:App,Sidebar,commandShortcut}=await import("../src/App.tsx");
@@ -26,10 +27,92 @@ test("App removes orbit, marketing hero and decorative project strip",()=>{const
 test("Cmd+K is app-local and focuses the Ask GHOST reference",()=>{assert.equal(commandShortcut({metaKey:true,key:"k",repeat:false}),true);assert.equal(commandShortcut({metaKey:true,key:"K",repeat:false}),true);assert.equal(commandShortcut({metaKey:false,key:"k",repeat:false}),false);assert.equal(commandShortcut({metaKey:true,key:"k",repeat:true}),false);const text=readFileSync(new URL("../src/App.tsx",import.meta.url),"utf8");assert.match(text,/commandInputRef\.current\?\.focus/);assert.match(text,/removeEventListener\("keydown"/);assert.doesNotMatch(text,/globalShortcut|accessibility/);});
 test("static browser planning is inert and performs no privileged IPC",async()=>{let calls=0;const client=new JarvisClient(()=>false,async<T>()=>{calls++;return {} as T;});const html=renderToStaticMarkup(React.createElement(JarvisCommand,{client,projectAlias:null,projects:[],mode:"static-preview"}));assert.match(html,/Static preview/);await assert.rejects(client.prepare({command:"synthetic",project_alias:null,context_query:null,sharing:noSharing}));await assert.rejects(client.send(review()));assert.equal(calls,0);});
 test("provider context sharing defaults off and Google has no sharing toggle",()=>{assert.deepEqual(noSharing,{personal_memory:false,project_memory:false});const html=renderToStaticMarkup(React.createElement(JarvisCommand,{client:new JarvisClient(()=>true),projectAlias:null,projects:[],mode:"live-local"}));assert.match(html,/Share approved personal memory/);assert.match(html,/Share reviewed project context/);assert.equal((html.match(/checked=""/g)??[]).length,0);assert.doesNotMatch(html,/Share Google|Share Gmail|Share calendar|Share contacts/);});
+test("Command mounts one compact voice input immediately beside the Ask GHOST draft without a disclosure", () => {
+  let calls = 0; const client = new JarvisClient(() => true, async<T>() => { calls++; return {} as T; });
+  const html = renderToStaticMarkup(React.createElement(JarvisCommand, { client, projectAlias: null, projects: [], mode: "live-local" }));
+  assert.equal((html.match(/voice-input-compact/g) ?? []).length, 1);
+  assert.ok(html.indexOf('id="ask-ghost"') < html.indexOf("voice-input-compact"));
+  assert.ok(html.indexOf("voice-input-compact") < html.indexOf("command-sharing"));
+  assert.doesNotMatch(html, /<details|<summary|voice-disclosure/); assert.equal(calls, 0);
+  const source = readFileSync(new URL("../src/jarvis/JarvisCommand.tsx", import.meta.url), "utf8");
+  const ast = ts.createSourceFile("JarvisCommand.tsx", source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TSX);
+  const voiceInputs: ts.JsxSelfClosingElement[] = [];
+  function visit(node: ts.Node) {
+    if (ts.isJsxSelfClosingElement(node) && node.tagName.getText(ast) === "VoiceInput") voiceInputs.push(node);
+    ts.forEachChild(node, visit);
+  }
+  visit(ast); assert.equal(voiceInputs.length, 1);
+  assert.ok(voiceInputs[0].attributes.properties.some(prop => ts.isJsxAttribute(prop) && prop.name.getText(ast) === "compact"));
+  for (let parent: ts.Node | undefined = voiceInputs[0].parent; parent; parent = parent.parent) {
+    if (ts.isJsxElement(parent)) assert.notEqual(parent.openingElement.tagName.getText(ast), "details");
+  }
+});
 test("preparation is offline, immutable and sends no interpretation",async()=>{const calls:string[]=[];const client=new JarvisClient(()=>true,async<T>(name:string)=>{calls.push(name);return review() as T;});const r=await client.prepare({command:"Synthetic request",project_alias:null,context_query:null,sharing:noSharing});assert.deepEqual(calls,["prepare_jarvis_request"]);assert.ok(Object.isFrozen(r));assert.ok(Object.isFrozen(r.sharing));});
 test("editing invalidates outbound review and stale preparation",async()=>{const client=new JarvisClient(()=>true,async<T>()=>review() as T);const r=await client.prepare({command:"synthetic",project_alias:null,context_query:null,sharing:noSharing});client.invalidate();await assert.rejects(client.send(r));let resolve:((r:JarvisReview)=>void)|undefined;const slow=new JarvisClient(()=>true,<T>()=>new Promise<T>(r=>{resolve=r as (r:JarvisReview)=>void;}));const request=slow.prepare({command:"synthetic",project_alias:null,context_query:null,sharing:noSharing});slow.invalidate();resolve!(review());await assert.rejects(request);});
 test("separate Send invokes once with exactly the frozen review and no actions",async()=>{const calls:[string,unknown][]=[];const client=new JarvisClient(()=>true,async<T>(name:string,args?:Record<string,unknown>)=>{calls.push([name,args]);return(name==="prepare_jarvis_request"?review():proposal())as T;});const r=await client.prepare({command:"synthetic",project_alias:null,context_query:null,sharing:noSharing});const p=await client.send(r);await assert.rejects(client.send(r));assert.deepEqual(calls.map(c=>c[0]),["prepare_jarvis_request","interpret_jarvis_request"]);assert.deepEqual(calls[1][1],{input:{review:r,confirmed:true}});assert.ok(Object.isFrozen(p.plan.steps));});
 test("failed interpretation is consumed without retry",async()=>{let attempts=0;const client=new JarvisClient(()=>true,async<T>(name:string)=>{if(name==="interpret_jarvis_request"){attempts++;throw"transport";}return review()as T;});const r=await client.prepare({command:"synthetic",project_alias:null,context_query:null,sharing:noSharing});await assert.rejects(client.send(r));await assert.rejects(client.send(r));assert.equal(attempts,1);});
+test("transcript adoption preserves exact untrusted text and returns a local draft with sharing and planner state reset", () => {
+  let calls = 0; const client = new JarvisClient(() => true, async<T>() => { calls++; return {} as T; });
+  const text = "  Send a message\n<script>untrusted()</script>  ";
+  const adoption = adoptTranscript(client, text, false);
+  assert.deepEqual(adoption, { error: null, draft: { command: text, sharing: { personal_memory: false, project_memory: false }, query: "", review: null, proposal: null } });
+  assert.equal(calls, 0); // No preparation, provider call, or execution RPC.
+});
+for (const text of ["", " \n\t", "x".repeat(MAX_COMMAND_BYTES + 1), "é".repeat(4097), "😀".repeat(2049)]) {
+  test(`invalid transcript adoption preserves an existing pending review (${utf8Bytes(text)} UTF-8 bytes)`, async () => {
+    const calls: string[] = []; const client = new JarvisClient(() => true, async<T>(command: string) => {
+      calls.push(command); return (command === "prepare_jarvis_request" ? review() : proposal()) as T;
+    });
+    const prior = await client.prepare({ command: "Existing draft", project_alias: "synthetic", context_query: null, sharing: noSharing });
+    const adoption = adoptTranscript(client, text, false);
+    assert.equal(adoption.draft, null); assert.match(adoption.error!, /empty|8,192 UTF-8 byte limit/);
+    assert.deepEqual(calls, ["prepare_jarvis_request"]);
+    await client.send(prior); // Rejection did not invalidate the existing review.
+  });
+}
+for (const text of ["x".repeat(8192), "é".repeat(4096), "😀".repeat(2048), "a".repeat(8188) + "😀"]) {
+  test(`transcript adoption accepts exactly 8,192 UTF-8 bytes (${text.length} JavaScript units)`, () => {
+    assert.equal(utf8Bytes(text), MAX_COMMAND_BYTES);
+    const adoption = adoptTranscript(new JarvisClient(() => true), text, false);
+    assert.equal(adoption.error, null); assert.equal(adoption.draft!.command, text);
+  });
+}
+test("successful adoption invalidates a previous planning review without preparing or sending", async () => {
+  const calls: string[] = []; const client = new JarvisClient(() => true, async<T>(name: string) => { calls.push(name); return review() as T; });
+  const prior = await client.prepare({ command: "Existing draft", project_alias: "synthetic", context_query: null, sharing: noSharing });
+  assert.equal(adoptTranscript(client, "New transcript", false).error, null);
+  await assert.rejects(client.send(prior), error => error === "changed_review");
+  assert.deepEqual(calls, ["prepare_jarvis_request"]);
+});
+test("static-preview and busy transcript adoption cannot change client state or invoke RPC", () => {
+  let calls = 0; const rpc = async<T>() => { calls++; return {} as T; };
+  assert.match(adoptTranscript(new JarvisClient(() => false, rpc), "New transcript", false).error!, /native desktop/);
+  assert.match(adoptTranscript(new JarvisClient(() => true, rpc), "New transcript", true).error!, /in progress/);
+  assert.equal(calls, 0);
+});
+for (const operation of ["prepare", "send"] as const) test(`adoption rejects native client ${operation} in progress even if caller busy flag is stale`, async () => {
+  let finish!: (value: unknown) => void; const calls: string[] = [];
+  const client = new JarvisClient(() => true, <T>(name: string) => {
+    calls.push(name);
+    if (operation === "send" && name === "prepare_jarvis_request") return Promise.resolve(review() as T);
+    return new Promise<T>(resolve => { finish = resolve as (value: unknown) => void; });
+  });
+  const input = { command: "Existing draft", project_alias: null, context_query: null, sharing: noSharing };
+  const pending = operation === "prepare" ? client.prepare(input) : client.send(await client.prepare(input));
+  const adoption = adoptTranscript(client, "New transcript", false);
+  assert.equal(adoption.draft, null); assert.match(adoption.error!, /in progress/);
+  assert.equal(calls.length, operation === "prepare" ? 1 : 2);
+  finish(operation === "prepare" ? review() : proposal()); await pending;
+});
+test("edited commands exceeding the UTF-8 byte limit are rejected before Prepare IPC", async () => {
+  let calls = 0; const client = new JarvisClient(() => true, async<T>() => { calls++; return review() as T; });
+  for (const command of ["", " \n", "x".repeat(8193), "é".repeat(4097), "😀".repeat(2049)]) {
+    await assert.rejects(client.prepare({ command, project_alias: null, context_query: null, sharing: noSharing }), error => error === "invalid_input");
+  }
+  assert.equal(calls, 0);
+  await client.prepare({ command: "😀".repeat(2048), project_alias: null, context_query: null, sharing: noSharing });
+  assert.equal(calls, 1);
+});
 test("provider review displays complete exact outbound content",()=>{const r=review();r.context=[{source:"personal_memory",kind:"fact",title:"Synthetic full title",content:"Synthetic first line\nSynthetic final line",project_alias:null,instruction_trust:"data_only"}];r.outbound_input="Synthetic complete outbound input";const html=renderToStaticMarkup(React.createElement(OutboundReview,{review:r,busy:false,onSend(){},onDismiss(){}}));for(const content of [r.command,r.context[0].title,r.context[0].content.split("\n")[1],r.outbound_input,r.request_sha256])assert.ok(html.includes(content));assert.match(html,/Send reviewed request to OpenAI/);});
 test("proposal renders inert steps with no automatic execution or batch control",()=>{let calls=0;Object.assign(globalThis,{isTauri:true,__TAURI_INTERNALS__:{invoke:async()=>{calls++;}}});const html=renderToStaticMarkup(React.createElement(JarvisPlan,{proposal:proposal(),projects:[],currentProject:null,mode:"live-local"}));assert.equal(calls,0);assert.equal((html.match(/>Review step</g)??[]).length,2);assert.match(html,/Not executed/);assert.doesNotMatch(html,/Run all|Run plan|Execute all|Prepare this Google action/);});
 test("each plan card requires its own explicit review click",()=>{let clicks=0;const tree=PlanCard({step:proposal().plan.steps[0],index:0,active:false,onReview(){clicks++;}});assert.equal(clicks,0);buttons(tree)[0].onClick();assert.equal(clicks,1);});
