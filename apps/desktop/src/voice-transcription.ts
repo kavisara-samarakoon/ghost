@@ -1,7 +1,9 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { listen, TauriEvent } from "@tauri-apps/api/event";
 
 export const MAX_AUDIO_BYTES = 8 * 1024 * 1024;
 export const MAX_DURATION_MS = 30_000;
+export const MAX_FINALIZATION_MS = 5_000;
 export const VOICE_MIMES = ["audio/webm;codecs=opus", "audio/webm", "audio/mp4", "audio/ogg;codecs=opus", "audio/ogg"] as const;
 export type VoiceMime = typeof VOICE_MIMES[number];
 export interface VoiceResult {
@@ -18,6 +20,9 @@ const messages: Record<string, string> = {
   permission: "Microphone permission was denied. No recording was sent.",
   format: "No supported recording format is available.",
   recording: "The microphone recording could not be completed. No recording was sent.",
+  interrupted: "Microphone capture was interrupted. The unfinished recording was discarded. Nothing was sent.",
+  finalization: "The recorder did not finish within five seconds. The unfinished recording was discarded. Nothing was sent. You can record again.",
+  lifecycle: "Voice capture is unavailable because window monitoring could not be initialized. Reopen Command to retry. Nothing was sent automatically.",
   too_large: "Recording exceeds the 8 MiB limit and was discarded.",
   duration: "Recording exceeded 30 seconds and was discarded.",
   credential: "OpenAI credential is unavailable. The native process needs OPENAI_API_KEY.",
@@ -54,6 +59,37 @@ export async function transcribeRecording(recording: Recording): Promise<VoiceRe
   } });
 }
 
+export interface VoiceLifecycle {
+  foreground: () => boolean;
+  listen: (event: "visibilitychange" | "blur" | "pagehide", callback: () => void) => () => void;
+  nativeBlur?: (callback: () => void) => Promise<() => void>;
+}
+export function watchVoiceLifecycle(controller: VoiceController, lifecycle?: VoiceLifecycle): () => void {
+  if (!lifecycle) return () => {};
+  let closed = false; let nativeUnlisten: (() => void) | undefined;
+  const background = () => { if (!closed) controller.background(); };
+  const visibility = () => { if (!lifecycle.foreground()) background(); };
+  const removeNative = (unlisten: () => void) => {
+    try { void Promise.resolve(unlisten()).catch(() => {}); } catch { /* disposed callbacks remain inert */ }
+  };
+  const cleanups: (() => void)[] = [];
+  try {
+    cleanups.push(lifecycle.listen("visibilitychange", visibility));
+    cleanups.push(lifecycle.listen("blur", background));
+    cleanups.push(lifecycle.listen("pagehide", background));
+    if (lifecycle.nativeBlur) {
+      lifecycle.nativeBlur(background).then(unlisten => {
+        if (closed) removeNative(unlisten); else nativeUnlisten = unlisten;
+      }).catch(() => { if (!closed) controller.monitorUnavailable(); });
+    }
+  } catch { controller.monitorUnavailable(); }
+  return () => {
+    if (closed) return;
+    closed = true;
+    cleanups.forEach(cleanup => { try { cleanup(); } catch { /* disposed callbacks remain inert */ } });
+    if (nativeUnlisten) removeNative(nativeUnlisten);
+  };
+}
 export interface VoiceEnvironment {
   available: boolean; mime: VoiceMime | null;
   microphone: () => Promise<MediaStream>;
@@ -65,18 +101,30 @@ export interface VoiceEnvironment {
   clearTimeout: (id: ReturnType<typeof setTimeout>) => void;
   clearInterval: (id: ReturnType<typeof setInterval>) => void;
   transcribe: (recording: Recording) => Promise<VoiceResult>;
+  lifecycle?: VoiceLifecycle;
 }
 export function browserVoiceEnvironment(): VoiceEnvironment {
   const media = typeof navigator === "undefined" ? undefined : navigator.mediaDevices;
   const recorder = typeof MediaRecorder === "undefined" ? undefined : MediaRecorder;
   const native = isTauri();
+  const available = voiceAvailable(native, media, recorder);
   return {
-    available: voiceAvailable(native, media, recorder), mime: selectVoiceMime(recorder),
+    available, mime: selectVoiceMime(recorder),
     microphone: () => media!.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true }, video: false }),
     recorder: (stream, mime) => new recorder!(stream, { mimeType: mime }),
     createURL: blob => URL.createObjectURL(blob), revokeURL: url => URL.revokeObjectURL(url),
-    now: () => performance.now(), timeout: setTimeout, interval: setInterval, clearTimeout, clearInterval,
+    now: () => performance.now(),
+    timeout: window.setTimeout.bind(window), interval: window.setInterval.bind(window),
+    clearTimeout: window.clearTimeout.bind(window), clearInterval: window.clearInterval.bind(window),
     transcribe: transcribeRecording,
+    lifecycle: available && typeof document !== "undefined" ? {
+      foreground: () => document.visibilityState === "visible" && document.hasFocus(),
+      listen: (event, callback) => {
+        const target = event === "visibilitychange" ? document : window;
+        target.addEventListener(event, callback); return () => target.removeEventListener(event, callback);
+      },
+      nativeBlur: callback => listen(TauriEvent.WINDOW_BLUR, callback, { target: { kind: "Window", label: "main" } }),
+    } : undefined,
   };
 }
 
@@ -94,10 +142,14 @@ export class VoiceController {
   private disposed = false;
   private deadline?: ReturnType<typeof setTimeout>;
   private ticker?: ReturnType<typeof setInterval>;
+  private finalization?: ReturnType<typeof setTimeout>;
+  private unwatch: () => void;
+  private captureAvailable = true;
   private env: VoiceEnvironment;
   constructor(env: VoiceEnvironment) {
     this.env = env;
     this.state = { phase: env.available ? "idle" : "unavailable", elapsedMs: 0, recording: null, result: null, message: env.available ? null : messages.unavailable };
+    this.unwatch = env.available ? watchVoiceLifecycle(this, env.lifecycle) : () => {};
   }
   getState = (): VoiceState => this.state;
   subscribe = (listener: () => void): (() => void) => { this.listeners.add(listener); return () => this.listeners.delete(listener); };
@@ -106,10 +158,18 @@ export class VoiceController {
     this.state = { ...this.state, ...patch }; this.listeners.forEach(listener => listener());
   }
   private stopTracks() {
-    this.stream?.getTracks().forEach(track => { track.onended = null; track.stop(); }); this.stream = null;
+    const stream = this.stream; this.stream = null;
+    stream?.getTracks().forEach(track => { track.onended = null; track.onmute = null; track.stop(); });
     if (this.deadline !== undefined) this.env.clearTimeout(this.deadline);
     if (this.ticker !== undefined) this.env.clearInterval(this.ticker);
     this.deadline = undefined; this.ticker = undefined;
+  }
+  private clearFinalization() {
+    if (this.finalization !== undefined) this.env.clearTimeout(this.finalization);
+    this.finalization = undefined;
+  }
+  private detachRecorder(recorder: MediaRecorder) {
+    recorder.ondataavailable = null; recorder.onstop = null; recorder.onerror = null;
   }
   private releaseRecording() {
     if (this.state.recording) this.env.revokeURL(this.state.recording.url);
@@ -117,9 +177,10 @@ export class VoiceController {
   }
   private cancelCapture() {
     this.stopTracks();
+    this.clearFinalization();
     const recorder = this.recorder; this.recorder = null;
     if (recorder) {
-      recorder.ondataavailable = null; recorder.onstop = null; recorder.onerror = null;
+      this.detachRecorder(recorder);
       if (recorder.state !== "inactive") { try { recorder.stop(); } catch { /* tracks are already stopped */ } }
     }
     this.chunks = []; this.bytes = 0;
@@ -128,31 +189,48 @@ export class VoiceController {
     this.generation++; this.cancelCapture(); this.releaseRecording();
     this.update({ phase: "error", recording: null, result: null, message: voiceError(code) });
   }
+  background(): void {
+    if (this.disposed || !["requesting", "recording", "stopping"].includes(this.state.phase)) return;
+    this.discard();
+    this.update({ message: "Capture canceled because GHOST left the foreground. The unfinished recording was discarded. Nothing was sent." });
+  }
+  monitorUnavailable(): void {
+    if (this.disposed) return;
+    this.captureAvailable = false; this.background();
+    this.update({ phase: ["idle", "error"].includes(this.state.phase) ? "unavailable" : this.state.phase, message: messages.lifecycle });
+  }
   async start(): Promise<void> {
     if (this.disposed || !this.env.available || ["requesting", "recording", "stopping", "sending"].includes(this.state.phase)) return;
+    if (!this.captureAvailable) { this.update({ message: messages.lifecycle }); return; }
+    if (this.env.lifecycle?.foreground() === false) { this.update({ message: "Bring GHOST to the foreground, then explicitly start recording." }); return; }
     const generation = ++this.generation;
     this.releaseRecording();
     this.update({ phase: "requesting", recording: null, result: null, message: null, elapsedMs: 0 });
+    if (generation !== this.generation || this.disposed || this.getState().phase !== "requesting") return;
     let obtained: MediaStream | null = null;
     try {
       obtained = await this.env.microphone();
       if (this.disposed || generation !== this.generation) { obtained.getTracks().forEach(track => track.stop()); return; }
       this.stream = obtained;
+      if (this.env.lifecycle?.foreground() === false) { this.background(); return; }
+      if (!obtained.getTracks().length || obtained.getTracks().some(track => track.readyState === "ended" || track.muted)) { this.fail("interrupted"); return; }
       if (!this.env.mime) { this.fail("format"); return; }
       const recorder = this.env.recorder(obtained, this.env.mime);
       this.recorder = recorder;
       const mime = recorder.mimeType || this.env.mime;
       if (!VOICE_MIMES.includes(mime as VoiceMime)) { this.fail("format"); return; }
       recorder.ondataavailable = event => {
-        if (generation !== this.generation || this.disposed) return;
+        if (generation !== this.generation || this.disposed || this.recorder !== recorder) return;
         this.bytes += event.data.size;
         if (this.bytes > MAX_AUDIO_BYTES) { this.fail("too_large"); return; }
         if (event.data.size) this.chunks.push(event.data);
       };
-      recorder.onerror = () => { if (generation === this.generation && !this.disposed) this.fail("recording"); };
+      recorder.onerror = () => { if (generation === this.generation && !this.disposed && this.recorder === recorder) this.fail("recording"); };
       recorder.onstop = () => {
-        if (generation !== this.generation || this.disposed) return;
-        this.stopTracks(); this.recorder = null;
+        if (generation !== this.generation || this.disposed || this.recorder !== recorder) return;
+        if (this.stoppedAt === null) { this.fail("interrupted"); return; }
+        if (this.env.now() - this.stoppedAt >= MAX_FINALIZATION_MS) { this.fail("finalization"); return; }
+        this.stopTracks(); this.clearFinalization(); this.detachRecorder(recorder); this.recorder = null;
         const durationMs = Math.max(1, Math.round((this.stoppedAt ?? this.env.now()) - this.startedAt));
         if (durationMs > MAX_DURATION_MS) { this.fail("duration"); return; }
         const blob = new Blob(this.chunks, { type: mime }); this.chunks = []; this.bytes = 0;
@@ -163,13 +241,23 @@ export class VoiceController {
           this.update({ phase: "review", recording, elapsedMs: durationMs });
         } catch { this.fail("recording"); }
       };
-      obtained.getTracks().forEach(track => { track.onended = () => { if (generation === this.generation && !this.disposed) this.stop(); }; });
+      obtained.getTracks().forEach(track => {
+        const interrupted = () => { if (generation === this.generation && !this.disposed && this.state.phase === "recording") this.fail("interrupted"); };
+        track.onended = interrupted; track.onmute = interrupted;
+      });
       this.startedAt = this.env.now();
       this.stoppedAt = null;
       recorder.start(250);
+      if (generation !== this.generation || this.disposed || this.recorder !== recorder) return;
       this.update({ phase: "recording" });
-      this.deadline = this.env.timeout(() => this.stop(), MAX_DURATION_MS);
-      this.ticker = this.env.interval(() => this.update({ elapsedMs: Math.min(MAX_DURATION_MS, Math.round(this.env.now() - this.startedAt)) }), 100);
+      if (generation !== this.generation || this.disposed || this.state.phase !== "recording") return;
+      this.deadline = this.env.timeout(() => { if (generation === this.generation && this.state.phase === "recording") this.stop(); }, MAX_DURATION_MS);
+      this.ticker = this.env.interval(() => {
+        if (generation !== this.generation || this.disposed || this.state.phase !== "recording") return;
+        if (this.env.lifecycle?.foreground() === false) { this.background(); return; }
+        if (this.stream?.getTracks().some(track => track.readyState === "ended" || track.muted)) { this.fail("interrupted"); return; }
+        this.update({ elapsedMs: Math.min(MAX_DURATION_MS, Math.round(this.env.now() - this.startedAt)) });
+      }, 100);
     } catch (error) {
       obtained?.getTracks().forEach(track => track.stop());
       if (generation !== this.generation || this.disposed) return;
@@ -182,8 +270,16 @@ export class VoiceController {
     // Release the microphone before waiting for the recorder's final data event.
     this.stoppedAt = this.env.now();
     this.stopTracks();
+    if (this.recorder !== recorder || this.state.phase !== "recording") return;
     this.update({ phase: "stopping" });
-    try { if (recorder.state !== "inactive") recorder.stop(); }
+    if (this.recorder !== recorder || this.getState().phase !== "stopping") return;
+    const generation = this.generation;
+    try {
+      this.finalization = this.env.timeout(() => {
+        if (generation === this.generation && !this.disposed && this.state.phase === "stopping" && this.recorder === recorder) this.fail("finalization");
+      }, MAX_FINALIZATION_MS);
+      if (recorder.state !== "inactive") recorder.stop();
+    }
     catch { this.fail("recording"); }
   }
   async send(): Promise<void> {
@@ -204,10 +300,10 @@ export class VoiceController {
   discard(): void {
     if (this.state.phase === "sending") return;
     this.generation++; this.cancelCapture(); this.releaseRecording();
-    this.update({ phase: this.env.available ? "idle" : "unavailable", recording: null, result: null, elapsedMs: 0, message: null });
+    this.update({ phase: this.env.available && this.captureAvailable ? "idle" : "unavailable", recording: null, result: null, elapsedMs: 0, message: null });
   }
   dispose(): void {
-    this.generation++; this.cancelCapture(); this.releaseRecording(); this.disposed = true;
-    this.state = { ...this.state, recording: null, result: null }; this.listeners.clear();
+    this.generation++; this.disposed = true; this.unwatch(); this.cancelCapture(); this.releaseRecording();
+    this.state = { ...this.state, phase: "unavailable", recording: null, result: null }; this.listeners.clear();
   }
 }

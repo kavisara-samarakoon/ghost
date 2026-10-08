@@ -53,7 +53,7 @@ ul, ol { padding-left: 18px; } li { line-height: 1.65; }
 .jarvis-workspace > form { border: 1px solid #354450; padding: 24px; border-radius: 12px; background: #12181f; }.ask-label { font-size: 17px; color: var(--text); margin-bottom: 12px; font-weight: 600; }#ask-ghost { font-size: 15px; min-height: 110px; background: #0e141b; }
 .command-sharing { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 20px; margin: 18px 0; color: var(--muted); font-size: 11px; }.command-sharing label { display: flex; align-items: center; gap: 7px; }.command-sharing > span { width: 100%; font-size: 10px; }
 .command-submit { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 18px; }.command-submit p { font-size: 11px; }.command-quick-links { display: flex; gap: 8px; margin-top: 24px; }
-.voice-disclosure, .manual-requests { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
+.manual-requests { margin-top: 24px; border-top: 1px solid var(--border); padding-top: 16px; }
 .review-panel, .jarvis-plan { margin-top: 24px; }.review-panel pre { padding: 12px; background: var(--surface-inset); border-radius: 6px; font-size: 12px; margin: 10px 0; }.context-row { padding: 12px 0; border-top: 1px solid var(--border); }
 .detail-grid { display: grid; grid-template-columns: 130px 1fr; gap: 8px; font-size: 12px; }.detail-grid dt { color: var(--muted); }.detail-grid dd { margin: 0; }
 .plan-card { display: flex; align-items: flex-start; gap: 14px; padding: 19px 0; border-top: 1px solid var(--border); }.plan-card > button { margin-left: auto; flex-shrink: 0; }.plan-number { height: 25px; width: 25px; display: grid; place-items: center; background: #1c242e; border-radius: 6px; color: var(--accent); font-size: 11px; }.plan-copy { flex: 1; min-width: 0; }.plan-copy h3 { margin: 2px 0 6px; }.plan-copy > span { font-size: 10px; color: var(--muted); }.plan-copy details pre { font-size: 12px; }.step-workspace { border-left: 2px solid #3b5463; padding-left: 18px; margin: 0 0 20px 12px; }.read-result { margin-top: 16px; }.read-result pre { max-height: 440px; overflow: auto; background: var(--surface-inset); padding: 14px; border: 1px solid var(--border); border-radius: 8px; font-size: 12px; }
@@ -71,6 +71,15 @@ ul, ol { padding-left: 18px; } li { line-height: 1.65; }
 @media (max-width: 1100px) { .workspace-content { padding: 28px 24px; }.projects-overview, .sessions-overview, .artifacts-overview, .memory-overview { grid-template-columns: 1fr 1fr; }.memory-page-grid, .sessions-content-grid, .project-detail-content, .artifacts-browser { grid-template-columns: 1fr; }.app-shell { grid-template-columns: 204px minmax(0,1fr); } }
 @media (max-width: 950px) { .app-shell { grid-template-columns: 186px minmax(0,1fr); }.workspace-content { padding: 24px 20px; }.workspace-toolbar { padding: 0 20px; }.today-grid, .project-page-list { grid-template-columns: 1fr; }.command-project-picker { align-items: flex-start; flex-direction: column; gap: 8px; }.command-project-picker > span { padding: 0; }.command-sharing { display: grid; }.app-safety { font-size: 9px; padding: 8px 16px; } }
 @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; transition: none !important; scroll-behavior: auto !important; } }
+
+.voice-input.voice-input-compact { margin-top: 12px; padding: 12px 0 0; background: transparent; border: 0; border-top: 1px solid var(--border); border-radius: 0; }
+.voice-entry { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px; }
+.voice-entry h2 { font-size: 12px; color: var(--text-secondary); }
+.voice-start { display: inline-flex; align-items: center; gap: 7px; }
+.voice-start svg { flex-shrink: 0; color: var(--accent); }
+.voice-input-compact > p { font-size: 11px; margin: 4px 0; }
+.voice-input-compact .voice-recording { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.voice-input-compact .voice-review, .voice-input-compact .voice-transcript { margin-top: 12px; }
 
 /* M44 uses the existing restrained surfaces and typography. */
 .automation-row { padding: 16px 0; border-bottom: 1px solid var(--border, #263241); }

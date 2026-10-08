@@ -13,11 +13,18 @@ macOS desktop companion. The CLI manages local workflow records. The desktop
 reviews approved local data and can save pending Action Requests and inert intent
 plan drafts. Neither desktop path executes a workflow.
 
-Current source capabilities through M37 include exact-confirmed CLI request
+The M31–M37 foundation includes exact-confirmed CLI request
 execution (M32), advisory OpenAI review (M33), exact-SHA-confirmed finite local
 orchestration (M34), reviewed voice transcription (M35), and proposal-only intent
 interpretation (M36). AI never owns execution authority. The desktop never invokes
 the CLI, shell, Git/GitHub, or release operations.
+
+The M45 development branch expands reviewed voice input beside **Ask GHOST**:
+foreground-only recording, bounded finalization, and explicit transcript adoption
+into an editable command with an 8,192 UTF-8 byte limit. See the
+[M45 workflow, security review, troubleshooting and proposed roadmap](docs/voice-first-interaction-m45.md).
+Live provider transcription remains unverified; local microphone/playback and
+foreground cancellation have owner-reported macOS verification.
 
 ## Release status
 
@@ -56,8 +63,10 @@ not depend on keeping the engine's implementation secret.
 
 Keep `~/.ghost` (or a custom `GHOST_HOME`) and every project's `.ghost/` private:
 registry/configuration, sessions, goals, notes, outputs, context packs, handoffs,
-AI drafts, intent plans and audits are local user data. Audio and transcripts stay
-in memory in the current desktop; any saved/exported copies must remain private.
+AI drafts, intent plans and audits are local user data. The desktop voice path
+keeps audio and transcripts in memory. An adopted command is a separate copy;
+later explicitly approved workflow or memory saves can persist reviewed text.
+Any saved/exported copies must remain private.
 API keys, credentials, future OAuth/access/refresh tokens, cookies and personal
 Gmail/Calendar/contact integration data never belong in the public repository or
 release bundles. Explicitly confirmed provider requests send reviewed content
@@ -118,8 +127,9 @@ automatically added to Git's ignore rules; review their contents before staging.
 
 ## Desktop page overview
 
-- **Command:** Project/workflow review, pending Action Requests, controlled voice
-  capture, and proposal-only intent interpretation.
+- **Command:** Ask GHOST with directly accessible reviewed voice input, editable
+  commands, pending Action Requests, and proposal-only planning. Audio Send,
+  transcript Use, planning Prepare/Send, and action approval are separate.
 - **Projects:** Review and select registered local workspaces.
 - **Sessions:** Review active session goals, notes, and status.
 - **Memory:** Search approved local GHOST memory locations after explicit submit.
@@ -258,8 +268,9 @@ repeatability, and failure handling.
 ## Safety boundaries and limitations
 
 - The desktop does not run shell commands or execute the GHOST CLI.
-- Desktop network access is limited to two separately confirmed native OpenAI
-  paths: voice transcription and intent interpretation; React cannot connect to OpenAI.
+- Native OpenAI voice transcription and planning require separate reviewed Sends;
+  React cannot connect directly to OpenAI. Explicit native Google operations retain
+  their existing independent gates. M44 automations never poll providers or send AI requests.
 - The desktop does not publish, deploy, merge, or release automatically.
 - Desktop writes pending Action Requests, optional inert intent plans, and
   content-free audits. CLI M32/M34 alone perform their confirmed local actions.

@@ -2,6 +2,7 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 import { blankMemory, type MemoryKind, type MemoryPayload } from "../personal-memory.ts";
 import type { EventTime, GoogleAction } from "../google-assistant.ts";
 import type { RequestAction } from "../action-requests.ts";
+import { MAX_COMMAND_BYTES, utf8Bytes, transcriptHandoffError } from "../transcript-handoff.ts";
 export type JarvisStep =
   | { capability: "search_project_memory"; query: string }
   | { capability: "start_session_request"; goal: string }
@@ -30,9 +31,11 @@ export class JarvisClient {
   private native: () => boolean; private rpc: Invoker; private generation = 0; private pending: JarvisReview | null = null; private busy = false;
   constructor(native: () => boolean = isTauri, rpc: Invoker = invoke) { this.native = native; this.rpc = rpc; }
   get available() { return this.native(); }
+  get inProgress() { return this.busy; }
   invalidate() { this.generation++; this.pending = null; }
   async prepare(input: JarvisInput): Promise<JarvisReview> {
     if (!this.available) throw "unavailable"; if (this.busy) throw "busy";
+    if (!input.command.trim() || utf8Bytes(input.command) > MAX_COMMAND_BYTES) throw "invalid_input";
     this.invalidate(); const generation = this.generation; this.busy = true;
     try { const review = immutable(await this.rpc<JarvisReview>("prepare_jarvis_request", { input }));
       if (generation !== this.generation) throw "changed_review";
@@ -45,6 +48,17 @@ export class JarvisClient {
     try { return immutable(await this.rpc<JarvisProposal>("interpret_jarvis_request", { input: { review, confirmed: true } })); }
     finally { this.busy = false; }
   }
+}
+export type TranscriptAdoption =
+  | { error: string; draft: null }
+  | { error: null; draft: { command: string; sharing: Sharing; query: string; review: null; proposal: null } };
+export function adoptTranscript(client: JarvisClient, text: string, busy: boolean): TranscriptAdoption {
+  if (!client.available) return { error: "Open the native desktop app to use a transcript in Ask GHOST.", draft: null };
+  if (busy || client.inProgress) return { error: "Planning is in progress. The Ask GHOST draft was not replaced; the transcript remains available.", draft: null };
+  const error = transcriptHandoffError(text);
+  if (error) return { error, draft: null };
+  client.invalidate();
+  return { error: null, draft: { command: text, sharing: { ...noSharing }, query: "", review: null, proposal: null } };
 }
 export function memorySuggestion(step: Extract<JarvisStep, { capability: "remember_personal_memory" }>): MemoryPayload {
   return { ...blankMemory(), kind: step.kind, title: step.title, content: step.content, tags: [...step.tags] };

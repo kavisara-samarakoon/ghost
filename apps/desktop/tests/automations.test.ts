@@ -6,7 +6,7 @@ import ts from "typescript";
 import React,{Children,isValidElement,type ReactNode} from "react";
 import {renderToStaticMarkup} from "react-dom/server";
 import {AutomationClient,AUTOMATION_POLL_MS,automationPhrase,automationError,offsetLabel,triggerSummary,openAutomationItem,needsAttention,startAutomationPolling,type AutomationPreview,type AutomationItem,type AutomationOperation,type PollEnvironment} from "../src/automations.ts";
-import {JarvisClient} from "../src/jarvis/jarvis.ts";
+import {JarvisClient,adoptTranscript,type JarvisReview,type JarvisProposal} from "../src/jarvis/jarvis.ts";
 import {sampleProjects} from "../src/preview-projects.ts";
 registerHooks({resolve(specifier,context,next){if(context.parentURL?.includes("/src/")&&specifier.startsWith("./")&&!/\.[a-z]+$/.test(specifier))return next(specifier+(existsSync(new URL(specifier+".tsx",context.parentURL))?".tsx":".ts"),context);return next(specifier,context);},load(url,context,next){if(/\.(css|png)$/.test(url))return {format:"module",shortCircuit:true,source:'export default "synthetic";'};if(url.endsWith(".tsx"))return {format:"module",shortCircuit:true,source:ts.transpileModule(readFileSync(new URL(url),"utf8"),{compilerOptions:{jsx:ts.JsxEmit.ReactJSX,module:ts.ModuleKind.ESNext,target:ts.ScriptTarget.ES2020}}).outputText};return next(url,context);}});
 const {default:AutomationsPage}=await import("../src/AutomationsPage.tsx");
@@ -48,13 +48,77 @@ test("M44 production automation surfaces exclude execution and provider primitiv
 test("native evaluator has no provider or generic execution imports",()=>{for(const name of ["evaluate.rs","ipc.rs","model.rs","mutations.rs","storage.rs"]){const source=readFileSync(new URL("../src-tauri/src/automations/"+name,import.meta.url),"utf8");assert.doesNotMatch(source,/reqwest|std::process|Command::|prepare_jarvis_request|interpret_jarvis_request|connectors::|execute_automation_action|invoke_automation_capability|run_command|https?:\/\//);}});
 test("automation permission has exactly eight narrow local commands",()=>{const source=readFileSync(new URL("../src-tauri/permissions/ghost-automations.toml",import.meta.url),"utf8");const list=source.match(/commands\.allow = \[(.*)\]/)![1].split(",").map(s=>s.trim().replaceAll('"',''));assert.deepEqual(list,["get_automation_status","list_automations","list_automation_inbox","prepare_automation_mutation","execute_automation_mutation","evaluate_automations","acknowledge_automation_item","dismiss_automation_item"]);assert.doesNotMatch(source,/plugin-shell|plugin-http|plugin-fs|run_|interpret_|prepare_jarvis/);});
 
-function jarvisHarness(){
+function jarvisHarness(options: { available?: boolean; projectAlias?: string; rpc?: <T>(name: string, args?: Record<string, unknown>) => Promise<T> } = {}){
  const source=readFileSync(new URL("../src/jarvis/JarvisCommand.tsx",import.meta.url),"utf8");const ast=ts.createSourceFile("JarvisCommand.tsx",source,ts.ScriptTarget.Latest,true,ts.ScriptKind.TSX);const program=ast.statements.filter(n=>!ts.isImportDeclaration(n)).map(n=>n.getText(ast)).join("\n").replace("export default function JarvisCommand","function JarvisCommand").replace(/^export /gm,"");const output=ts.transpileModule(program,{compilerOptions:{target:ts.ScriptTarget.ES2022,jsx:ts.JsxEmit.React}}).outputText;
- let cursor=0;const cells:any[]=[];let effects:(()=>void)[]=[];const mocks={React,JarvisClient,noSharing:{personal_memory:false,project_memory:false},jarvisError:()=>"error",JarvisPlan:"JarvisPlan",VoiceInput:"VoiceInput",useState:(initial:any)=>{const index=cursor++;if(!cells[index])cells[index]={value:typeof initial==="function"?initial():initial};return [cells[index].value,(v:any)=>{cells[index].value=typeof v==="function"?v(cells[index].value):v;}];},useRef:(v:any)=>{const index=cursor++;return cells[index]??(cells[index]={current:v});},useEffect:(fn:()=>void,deps:any[])=>{const index=cursor++;if(cells[index]?.deps?.every((v:any,i:number)=>v===deps[i])&&cells[index].deps.length===deps.length)return;cells[index]={deps};effects.push(fn);}};
- const Component=new Function(...Object.keys(mocks),output+"\nreturn JarvisCommand;")(...Object.values(mocks));let calls=0;const client=new JarvisClient(()=>true,async<T>()=>{calls++;return {} as T;});let props:any={client,projectAlias:null,projects:[],mode:"live-local"};let tree:ReactNode;
+ let cursor=0;const cells:any[]=[];let effects:(()=>void)[]=[];const mocks={React,JarvisClient,adoptTranscript,noSharing:{personal_memory:false,project_memory:false},jarvisError:()=>"error",JarvisPlan:"JarvisPlan",VoiceInput:()=>null,useState:(initial:any)=>{const index=cursor++;if(!cells[index])cells[index]={value:typeof initial==="function"?initial():initial};return [cells[index].value,(v:any)=>{cells[index].value=typeof v==="function"?v(cells[index].value):v;}];},useRef:(v:any)=>{const index=cursor++;return cells[index]??(cells[index]={current:v});},useEffect:(fn:()=>void,deps:any[])=>{const index=cursor++;if(cells[index]?.deps?.every((v:any,i:number)=>v===deps[i])&&cells[index].deps.length===deps.length)return;cells[index]={deps};effects.push(fn);}};
+ const Component=new Function(...Object.keys(mocks),output+"\nreturn JarvisCommand;")(...Object.values(mocks));let calls=0;const requests: {name:string;args?:Record<string,unknown>}[]=[];const client=new JarvisClient(()=>options.available??true,async<T>(name:string,args?:Record<string,unknown>)=>{calls++;requests.push({name,args});return options.rpc ? options.rpc<T>(name,args) : {} as T;});let props:any={client,projectAlias:options.projectAlias??null,projects:[],mode:options.available===false?"static-preview":"live-local"};let tree:ReactNode;
  const render=()=>{cursor=0;tree=Component(props);const pending=effects;effects=[];pending.forEach(f=>f());cursor=0;tree=Component(props);return tree;};
  function nodes(node:ReactNode):React.ReactElement[]{const out:React.ReactElement[]=[];Children.forEach(node,n=>{if(!isValidElement(n))return;out.push(n);out.push(...nodes((n.props as any).children));});return out;}
- return {render,calls:()=>calls,prefill:()=>{props={...props,prefill:{id,text:"Synthetic prefilled prompt"}};render();},nodes:()=>nodes(render())};
+ return {render,requests,calls:()=>calls,prefill:()=>{props={...props,prefill:{id,text:"Synthetic prefilled prompt"}};render();},nodes:()=>nodes(render()),voice:()=>nodes(render()).find(n=>n.type===mocks.VoiceInput)!.props as any};
 }
 test("production Command prefill fills text with no prepare or send",()=>{const h=jarvisHarness();h.render();h.prefill();const textarea=h.nodes().find(n=>n.type==="textarea")!;assert.equal((textarea.props as any).value,"Synthetic prefilled prompt");assert.equal(h.calls(),0);});
 test("production Command prefill resets sharing off and discards outbound review",()=>{const h=jarvisHarness();h.render();let toggles=h.nodes().filter(n=>n.type==="input"&&(n.props as any).type==="checkbox");(toggles[0].props as any).onChange({target:{checked:true}});assert.equal((h.nodes().filter(n=>n.type==="input"&&(n.props as any).type==="checkbox")[0].props as any).checked,true);h.prefill();toggles=h.nodes().filter(n=>n.type==="input"&&(n.props as any).type==="checkbox");assert.ok(toggles.every(n=>(n.props as any).checked===false));assert.equal(h.calls(),0);assert.doesNotMatch(renderToStaticMarkup(h.render()),/Send reviewed request to OpenAI/);});
+
+// Reuse the existing Command hook harness for handoff integration; no second compiler/harness.
+function commandInput(h: ReturnType<typeof jarvisHarness>) { return h.nodes().find(n => n.type === "textarea")!.props as any; }
+function commandReview(h: ReturnType<typeof jarvisHarness>) { return h.nodes().find(n => typeof n.type === "function" && n.type.name === "OutboundReview"); }
+function commandSharing(h: ReturnType<typeof jarvisHarness>) { return h.nodes().filter(n => n.type === "input" && (n.props as any).type === "checkbox").map(n => n.props as any); }
+function prepareCommand(h: ReturnType<typeof jarvisHarness>) { (h.nodes().find(n => n.type === "form")!.props as any).onSubmit({ preventDefault() {} }); }
+function planningReply(name: string): JarvisReview | JarvisProposal {
+  return name === "prepare_jarvis_request" ? { version: 1, schema_version: 1, command: "Existing draft", project_alias: "synthetic", context_query: "Existing query", sharing: {personal_memory:true,project_memory:true}, model: "synthetic", created_at: 1, expires_at: 301, context: [], outbound_input: "Synthetic reviewed content", outbound_bytes: 26, request_sha256: "a".repeat(64), safety_notice: "Planning only" }
+    : { version: 1, plan: { kind: "clarify", summary: "Synthetic proposal", steps: [] }, project_alias: "synthetic", model: "synthetic", request_sha256: "a".repeat(64), proposal_sha256: "b".repeat(64), audit_recorded: true };
+}
+function existingCommand(h: ReturnType<typeof jarvisHarness>) {
+  commandInput(h).onChange({ target: { value: "Existing draft" } });
+  commandSharing(h).forEach(toggle => toggle.onChange({ target: { checked: true } }));
+  (h.nodes().find(n => n.type === "input" && !(n.props as any).type)!.props as any).onChange({ target: { value: "Existing query" } });
+}
+test("Command adopts a transcript locally, remains editable, and preserves project binding for explicit Prepare", async () => {
+  const h = jarvisHarness({ projectAlias: "synthetic", rpc: async<T>(name: string) => planningReply(name) as T });
+  h.render(); assert.equal(h.voice().transcriptTarget.replacesDraft, false);
+  h.voice().onUseTranscript("Reviewed transcript 😀");
+  assert.equal(commandInput(h).value, "Reviewed transcript 😀"); assert.equal(commandInput(h).disabled, false); assert.equal(h.calls(), 0);
+  commandInput(h).onChange({ target: { value: "Locally edited command" } }); assert.equal(h.calls(), 0);
+  prepareCommand(h); await settle();
+  assert.deepEqual(h.requests.map(r => r.name), ["prepare_jarvis_request"]);
+  assert.deepEqual(h.requests[0].args!.input, { command: "Locally edited command", project_alias: "synthetic", context_query: null, sharing: {personal_memory:false,project_memory:false} });
+});
+for (const prior of ["review", "proposal"] as const) test(`Command replacement clears previous ${prior}, sharing and context query without sending`, async () => {
+  const h = jarvisHarness({ projectAlias: "synthetic", rpc: async<T>(name: string) => planningReply(name) as T });
+  h.render(); existingCommand(h); prepareCommand(h); await settle();
+  if (prior === "proposal") { (commandReview(h)!.props as any).onSend(); await settle(); assert.ok(h.nodes().some(n => n.type === "JarvisPlan")); }
+  else assert.ok(commandReview(h));
+  const calls = h.calls(); assert.equal(h.voice().transcriptTarget.replacesDraft, true);
+  h.voice().onUseTranscript("Replacement transcript");
+  assert.equal(commandInput(h).value, "Replacement transcript"); assert.equal(commandReview(h), undefined);
+  assert.ok(!h.nodes().some(n => n.type === "JarvisPlan")); assert.ok(commandSharing(h).every(toggle => toggle.checked === false)); assert.equal(h.calls(), calls);
+  commandSharing(h)[0].onChange({ target: { checked: true } });
+  assert.equal((h.nodes().find(n => n.type === "input" && !(n.props as any).type)!.props as any).value, "");
+});
+for (const text of ["", " \n", "é".repeat(4097), "😀".repeat(2049)]) test(`Command rejects handoff without losing its draft or review (${new TextEncoder().encode(text).length} bytes)`, async () => {
+  const h = jarvisHarness({ rpc: async<T>(name: string) => planningReply(name) as T });
+  h.render(); existingCommand(h); prepareCommand(h); await settle(); const previous = (commandReview(h)!.props as any).review;
+  h.voice().onUseTranscript(text);
+  assert.equal(commandInput(h).value, "Existing draft"); assert.equal((commandReview(h)!.props as any).review, previous);
+  assert.ok(commandSharing(h).every(toggle => toggle.checked === true)); assert.equal(h.calls(), 1);
+});
+for (const operation of ["prepare", "send"] as const) test(`Command rejects stale handoff callbacks during ${operation}`, async () => {
+  let finish!: (value: unknown) => void;
+  const h = jarvisHarness({ rpc: <T>(name: string) => {
+    if (operation === "send" && name === "prepare_jarvis_request") return Promise.resolve(planningReply(name) as T);
+    return new Promise<T>(resolve => { finish = resolve as (value: unknown) => void; });
+  } });
+  h.render(); existingCommand(h); const staleUse = h.voice().onUseTranscript;
+  prepareCommand(h);
+  if (operation === "send") { await settle(); (commandReview(h)!.props as any).onSend(); }
+  staleUse("Must not overwrite the draft");
+  assert.equal(commandInput(h).value, "Existing draft"); assert.equal(h.voice().transcriptTarget.busy, true);
+  assert.ok(commandSharing(h).every(toggle => toggle.checked === true)); assert.equal(h.calls(), operation === "prepare" ? 1 : 2);
+  finish(planningReply(operation === "prepare" ? "prepare_jarvis_request" : "interpret_jarvis_request")); await settle();
+});
+test("static Command rejects transcript adoption and M44 prefill remains a separate local operation", () => {
+  const preview = jarvisHarness({ available: false }); preview.render(); preview.voice().onUseTranscript("Unavailable transcript");
+  assert.equal(commandInput(preview).value, ""); assert.equal(preview.calls(), 0);
+  const h = jarvisHarness(); h.render(); h.voice().onUseTranscript("Reviewed transcript"); h.prefill();
+  assert.equal(commandInput(h).value, "Synthetic prefilled prompt"); assert.ok(commandSharing(h).every(toggle => toggle.checked === false)); assert.equal(h.calls(), 0);
+});

@@ -50,15 +50,44 @@ write workflow files, execute shell/CLI commands, call AI/network services, read
 `.env` files, or search source code. Native actions require an explicit user click
 and revalidate allowlisted local artifacts.
 
-M35 adds a separate **Voice Input** panel: explicitly start a recording (maximum
-30 seconds / 8 MiB), stop and play it locally, then explicitly **Send to OpenAI
-for transcription**. The native process uses `OPENAI_API_KEY` from its environment
-and one fixed `gpt-transcribe` request to the OpenAI transcription endpoint.
-Normally launched macOS apps may not inherit shell environment variables; GHOST
-does not read credential files or store keys. Browser preview cannot record/send.
-Audio and sanitized transcript stay in memory; the only voice write is content-free
-`GHOST_HOME/desktop-voice-audit.jsonl`. Transcripts never create Action Requests,
-invoke CLI/orchestration, or run workflow actions. No automatic retry occurs.
+## M45 — Expanded Voice-First Interaction
+
+Voice Input is directly below **Ask GHOST** in Command. Its microphone button is
+labeled **Start recording**, with no collapsible disclosure. The workflow is:
+
+**Start → Stop → Review/play local audio → Send to OpenAI for transcription →
+Review untrusted transcript → Use transcript in Ask GHOST → Edit locally →
+Prepare request → Review outbound content → Send reviewed request to OpenAI.**
+
+Recording is limited to 30 seconds / 8 MiB. Stop immediately releases microphone
+tracks; finalization is bounded to five seconds with Discard recovery. Hide,
+minimize, focus loss, navigation, or track interruption cancels unfinished capture.
+Returning never resumes capture. Completed recordings remain review-only until
+explicit Send; navigation clears component-owned audio/transcript state.
+
+Transcript adoption rejects empty text or more than 8,192 UTF-8 bytes without
+truncation. Its button explicitly announces replacement of an existing command.
+Valid adoption resets personal/project sharing off, clears the context query and
+stale planning reviews/proposals, and preserves project binding. Busy planning
+blocks adoption. The original transcript remains available until separately discarded.
+
+The existing M35 native transcription path uses `OPENAI_API_KEY` from the native
+process environment and one fixed `gpt-transcribe` request. Normally launched
+macOS apps may not inherit shell variables. GHOST does not load credential files
+or store OpenAI keys; Google Keychain integration does not provision this key.
+Browser preview cannot record/send. Voice content stays in memory; the only voice
+write is metadata-only `GHOST_HOME/desktop-voice-audit.jsonl`.
+
+The owner reports native macOS recording/playback, compact UI, minimize
+cancellation by video, and application-switching cancellation verification.
+**Live provider transcription remains unverified because an API credential is
+not configured for the reported test environment.** Navigation/unmount after
+Send cannot recall a request already dispatched to OpenAI. No automatic retry,
+planning, workflow action, background listener, wake word or spoken reply exists.
+
+See the [M45 guide and final integration review](../../docs/voice-first-interaction-m45.md)
+for permission/privacy behavior, troubleshooting, validation limits, and proposed
+future work. M46 live-provider and distribution hardening remains separate.
 
 ## M36 — Controlled Intent
 
@@ -214,4 +243,4 @@ CREATE/UPDATE/PAUSE/RESUME/DELETE AUTOMATION <sha256>. Reviews expire in five mi
 are consumed before attempts and revalidate current state. Acknowledge/Dismiss only
 change local inbox status. A due item's task snapshot never changes with its definition.
 Catch-up creates at most one most-recent occurrence per automation and 32 per evaluation.
-M45 voice and M46 live-provider/distribution hardening remain separate.
+M45 reviewed voice interaction and M46 live-provider/distribution hardening remain separate.
