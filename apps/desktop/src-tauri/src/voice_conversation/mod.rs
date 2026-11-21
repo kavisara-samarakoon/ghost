@@ -16,6 +16,8 @@ mod limits;
 mod microphone;
 mod model;
 #[cfg(test)]
+mod native_speech;
+#[cfg(test)]
 mod preservation;
 #[cfg(test)]
 mod provenance;
