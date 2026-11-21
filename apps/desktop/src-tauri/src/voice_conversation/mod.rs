@@ -27,6 +27,8 @@ mod settings;
 #[cfg(test)]
 mod speech;
 #[cfg(test)]
+mod speech_output_ownership;
+#[cfg(test)]
 mod stop;
 #[cfg(test)]
 mod tests;
