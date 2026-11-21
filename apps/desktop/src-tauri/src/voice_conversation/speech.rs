@@ -364,3 +364,7 @@ impl SpeechController {
 #[cfg(test)]
 #[path = "speech_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "speech_coordinator.rs"]
+mod coordinator;
