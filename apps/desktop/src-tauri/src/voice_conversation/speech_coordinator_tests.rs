@@ -57,6 +57,7 @@ struct Script {
     submission: NativeResult<Evidence>,
     stop: NativeResult<Evidence>,
     during_request: Option<Evidence>,
+    on_prepare: Option<Box<dyn FnOnce()>>,
     during_stop: Option<Evidence>,
     at_shutdown: Option<Notice>,
     after_poll: Option<Box<dyn FnOnce()>>,
@@ -77,6 +78,7 @@ impl Default for Script {
             submission: Ok(Evidence::Requested),
             stop: Ok(Evidence::CancellationUnconfirmed(StopAttempt::Accepted)),
             during_request: None,
+            on_prepare: None,
             during_stop: None,
             at_shutdown: None,
             after_poll: None,
@@ -97,6 +99,9 @@ impl SpeechOutput for Script {
         voice: &VoiceId,
         admitted: &MonotonicTime,
     ) -> NativeResult<Notice> {
+        if let Some(hook) = self.on_prepare.take() {
+            hook();
+        }
         let identity = binding.identity();
         self.requests.push(Request {
             identity,
@@ -780,13 +785,14 @@ fn logical_epoch_exhaustion_cannot_obstruct_immediate_stop() {
 
 #[cfg(target_os = "macos")]
 mod native_driver_ownership {
-    use super::super::macos::{CleanupOwner, Driver, Scheduler};
+    use super::super::macos::{CleanupOwner, Driver, DriverHandle, Scheduler};
     use super::*;
 
     #[derive(Default)]
     struct Schedule {
         arms: usize,
         fail_next: bool,
+        on_arm: Option<Box<dyn FnOnce()>>,
         action: Option<Box<dyn FnOnce()>>,
     }
 
@@ -831,6 +837,11 @@ mod native_driver_ownership {
             }
             schedule.arms += 1;
             schedule.action = Some(Box::new(action));
+            let on_arm = schedule.on_arm.take();
+            drop(schedule);
+            if let Some(on_arm) = on_arm {
+                on_arm();
+            }
             Ok(FakeTimer {
                 scheduler: self.clone(),
             })
@@ -838,7 +849,7 @@ mod native_driver_ownership {
     }
 
     type TestDriver = Driver<Script, Clock, Gate, FakeScheduler>;
-    type Handle = Rc<RefCell<TestDriver>>;
+    type Handle = DriverHandle<TestDriver>;
 
     fn open(scheduler: FakeScheduler) -> Result<Handle> {
         TestDriver::new(scheduler, || Ok(Fixture::new().coordinator))
@@ -1021,6 +1032,297 @@ mod native_driver_ownership {
         .unwrap();
     }
 
+    fn scoped_script(
+        scheduler: FakeScheduler,
+        configure: impl FnOnce(&mut Coordinator<Script, Clock, Gate>),
+    ) -> Handle {
+        TestDriver::new(scheduler, || {
+            let mut coordinator = Fixture::new().coordinator;
+            coordinator.emergency = Some(Rc::new(StopLatch::new(
+                coordinator.output_scope.clone(),
+                identity(1),
+            )));
+            configure(&mut coordinator);
+            Ok(coordinator)
+        })
+        .unwrap()
+    }
+
+    #[test]
+    fn emergency_stop_before_admission_and_during_validation_discards_work() {
+        for during_validation in [false, true] {
+            let slot = Rc::new(RefCell::new(None::<EmergencyStop>));
+            let hook = slot.clone();
+            let scheduler = FakeScheduler::default();
+            let driver = scoped_script(scheduler.clone(), move |coordinator| {
+                let clock = coordinator.clock.clone();
+                coordinator.validate = Box::new(move |identity| {
+                    if let Some(stop) = hook.borrow_mut().take() {
+                        assert_eq!(stop.record(), IntentRecording::Recorded);
+                    }
+                    Some(Validation {
+                        identity,
+                        role: ProviderRole::Tts,
+                        deadline: Deadline::after(clock.now(), Duration::from_secs(300)).unwrap(),
+                        source_eligible: true,
+                        speaker_allowed: true,
+                        cloud_tts_allowed: false,
+                    })
+                });
+            });
+            let stop = driver.emergency_stop().unwrap();
+            if during_validation {
+                *slot.borrow_mut() = Some(stop.clone());
+            } else {
+                let guards = [std::sync::Mutex::new(()), std::sync::Mutex::new(())];
+                let _held = guards.each_ref().map(|lock| lock.lock().unwrap());
+                assert_eq!(stop.record(), IntentRecording::Recorded);
+            }
+            TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(
+                    coordinator.admit(identity(1), 1, "Synthetic".into(), voice()),
+                    Err(Error::Closed)
+                );
+                assert!(coordinator.port.requests.is_empty());
+                assert_eq!(coordinator.logical.capacity.usage(), (0, 0, 0));
+                assert!(coordinator.cancellation.is_none());
+                Ok(())
+            })
+            .unwrap();
+            assert_eq!(stop.record(), IntentRecording::AlreadyRecorded);
+            assert!(!scheduler.armed());
+        }
+    }
+
+    #[test]
+    fn busy_driver_services_intent_on_success_error_and_unwind() {
+        for exit in ["success", "error", "panic"] {
+            let scheduler = FakeScheduler::default();
+            let driver = scoped_script(scheduler, |_| {});
+            start(&driver);
+            let stop = driver.emergency_stop().unwrap();
+            let result = TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(stop.record(), IntentRecording::Recorded);
+                assert_eq!(stop.record(), IntentRecording::AlreadyRecorded);
+                assert!(coordinator.port.stops.is_empty());
+                assert_eq!(TestDriver::turn(&driver, |_| Ok(())), Err(Error::Scheduler));
+                match exit {
+                    "success" => Ok(()),
+                    "error" => Err(Error::NoJob),
+                    _ => panic!("synthetic turn panic"),
+                }
+            });
+            assert_eq!(
+                result,
+                Err(match exit {
+                    "success" => Error::Closed,
+                    "error" => Error::NoJob,
+                    _ => Error::Scheduler,
+                })
+            );
+            TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(coordinator.port.stops, [identity(1)]);
+                assert_eq!(coordinator.submit(), Err(Error::Closed));
+                assert!(coordinator.cancellation.is_none());
+                assert_eq!(
+                    coordinator.emergency.as_ref().unwrap().intent.get(),
+                    Intent::Serviced
+                );
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn busy_timer_preserves_one_stop_wake_and_failed_rearm_tears_down() {
+        for fail_rearm in [false, true] {
+            let scheduler = FakeScheduler::default();
+            let driver = scoped_script(scheduler.clone(), |_| {});
+            let stop = driver.emergency_stop().unwrap();
+            let on_arm = scheduler.clone();
+            scheduler.0.borrow_mut().on_arm = Some(Box::new(move || {
+                assert_eq!(stop.record(), IntentRecording::Recorded);
+                on_arm.fire(); // The driver still owns its mutable turn.
+                on_arm.0.borrow_mut().fail_next = fail_rearm;
+            }));
+            let result = TestDriver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                coordinator.submit()
+            });
+            assert_eq!(
+                result,
+                Err(if fail_rearm {
+                    Error::Scheduler
+                } else {
+                    Error::Closed
+                })
+            );
+            assert_eq!(scheduler.arms(), if fail_rearm { 1 } else { 2 });
+            assert_eq!(scheduler.armed(), !fail_rearm);
+            if !fail_rearm {
+                scheduler.fire();
+            }
+            TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(coordinator.port.stops, [identity(1)]);
+                assert!(coordinator.cancellation.is_none());
+                assert!(coordinator.revoked);
+                assert_eq!(coordinator.shutdown, fail_rearm);
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn reentrant_stop_suppresses_requested_and_polled_positive_notices() {
+        for during_prepare in [false, true] {
+            let scheduler = FakeScheduler::default();
+            let driver = scoped_script(scheduler.clone(), |_| {});
+            let stop = driver.emergency_stop().unwrap();
+            let hook = Box::new(move || {
+                assert_eq!(stop.record(), IntentRecording::Recorded);
+            });
+            if during_prepare {
+                assert_eq!(
+                    TestDriver::turn(&driver, |coordinator| {
+                        coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                        coordinator.port.on_prepare = Some(hook);
+                        coordinator.port.during_request = Some(Evidence::Started);
+                        // The fake crosses its submission edge after the Stop hook.
+                        // P2-03D must prevent that call. P2-03C suppresses the notice.
+                        coordinator.submit()
+                    }),
+                    Err(Error::Closed)
+                );
+            } else {
+                start(&driver);
+                TestDriver::turn(&driver, |coordinator| {
+                    coordinator
+                        .port
+                        .notices
+                        .push_back(notice(1, Evidence::Started));
+                    coordinator.port.after_poll = Some(hook);
+                    let wake = coordinator.wake.clone().unwrap();
+                    assert_eq!(coordinator.wake(&wake)?, [None; 2]);
+                    Ok(())
+                })
+                .unwrap();
+            }
+            TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(coordinator.port.requests.len(), 1);
+                assert_eq!(coordinator.port.stops, [identity(1)]);
+                assert_eq!(coordinator.cleanup, Cleanup::Unresolved);
+                assert_eq!(coordinator.logical.capacity.usage(), (0, 0, 0));
+                assert!(coordinator.cancellation.is_none());
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn submission_stop_check_rejects_foreign_epoch_and_wrong_session_scope() {
+        let run = identity(1).app_run_id;
+        let route = Generation::from_native_sequence(1).unwrap();
+        let owner = OutputScope::new(run, route);
+        let latch = Rc::new(StopLatch::new(owner.clone(), identity(1)));
+        let stop = EmergencyStop(Rc::downgrade(&latch));
+        let exact = owner.bind(identity(1), 1);
+        let check = SubmissionStopCheck {
+            latch: &latch,
+            expected: &exact,
+        };
+        assert_eq!(check.check_stop(&exact), Ok(()));
+        for binding in [
+            OutputScope::new(run, route).bind(identity(1), 1),
+            owner.next_owner().unwrap().bind(identity(1), 1),
+            owner.bind(identity(1), 2),
+            owner.bind(identity(1), 1),
+        ] {
+            assert_eq!(check.check_stop(&binding), Err(RevokedOrMismatched));
+        }
+        let mutations: [fn(&mut ContractIdentity); 5] = [
+            |id| id.interaction_id = InteractionId::from_native_sequence(2).unwrap(),
+            |id| id.session_id = SessionId::from_native_sequence(2).unwrap(),
+            |id| id.generation = Generation::from_native_sequence(2).unwrap(),
+            |id| {
+                id.configuration_revision = ConfigurationRevision::from_native_sequence(2).unwrap()
+            },
+            |id| id.consent_binding_id = ConsentBindingId::from_native_sequence(2).unwrap(),
+        ];
+        for change in mutations {
+            let mut wrong = identity(1);
+            change(&mut wrong);
+            let binding = owner.bind(wrong, 1);
+            let check = SubmissionStopCheck {
+                latch: &latch,
+                expected: &binding,
+            };
+            assert_eq!(check.check_stop(&binding), Err(RevokedOrMismatched));
+        }
+        assert_eq!(stop.record(), IntentRecording::Recorded);
+        assert_eq!(check.check_stop(&exact), Err(RevokedOrMismatched));
+        assert!(latch.service());
+        assert_eq!(check.check_stop(&exact), Err(RevokedOrMismatched));
+    }
+
+    #[test]
+    fn rejected_or_failed_native_stop_keeps_intent_revoked_without_a_terminal() {
+        for native in [
+            Ok(Evidence::CancellationUnconfirmed(StopAttempt::Rejected)),
+            Ok(Evidence::CancellationUnconfirmed(StopAttempt::Failed)),
+            Err(native_speech::Error::NativeFailure),
+        ] {
+            let scheduler = FakeScheduler::default();
+            let driver = scoped_script(scheduler.clone(), |coordinator| {
+                coordinator.port.stop = native
+            });
+            start(&driver);
+            let stop = driver.emergency_stop().unwrap();
+            assert_eq!(stop.record(), IntentRecording::Recorded);
+            for _ in 0..=MAX_STOP_POLLS {
+                assert!(scheduler.armed());
+                scheduler.fire();
+                assert_eq!(stop.record(), IntentRecording::AlreadyRecorded);
+            }
+            assert!(!scheduler.armed());
+            TestDriver::turn(&driver, |coordinator| {
+                assert_eq!(coordinator.port.stops, [identity(1)]);
+                assert_eq!(coordinator.port.polls, MAX_STOP_POLLS);
+                assert!(coordinator.cancellation.is_none());
+                assert_eq!(coordinator.cleanup, Cleanup::Unresolved);
+                assert_eq!(coordinator.submit(), Err(Error::Closed));
+                Ok(())
+            })
+            .unwrap();
+        }
+    }
+
+    #[test]
+    fn stop_recorded_during_shutdown_is_serviced_without_changing_the_native_attempt() {
+        let driver = scoped_script(FakeScheduler::default(), |_| {});
+        start(&driver);
+        let stop = driver.emergency_stop().unwrap();
+        let reentrant = stop.clone();
+        TestDriver::turn(&driver, |coordinator| {
+            coordinator.port.on_shutdown = Some(Box::new(move || {
+                assert_eq!(reentrant.record(), IntentRecording::Recorded);
+            }));
+            coordinator.shutdown()?;
+            assert_eq!(coordinator.port.stops, [identity(1)]);
+            assert!(coordinator.cancellation.is_none());
+            assert_eq!(
+                coordinator.emergency.as_ref().unwrap().intent.get(),
+                Intent::Serviced
+            );
+            Ok(())
+        })
+        .unwrap();
+        drop(driver);
+        assert_eq!(stop.record(), IntentRecording::Stale);
+    }
+
     fn cleanup_owner(
         clock: Clock,
         scheduler: FakeScheduler,
@@ -1035,7 +1337,7 @@ mod native_driver_ownership {
 
     fn assert_cleanup_owner_busy(owner: &Rc<CleanupOwner<Clock, FakeScheduler>>) {
         let result = owner.open_driver(
-            identity(1).interaction_id,
+            identity(1),
             |_| None,
             |_| panic!("an unresolved flight must block the factory"),
         );
@@ -1054,7 +1356,7 @@ mod native_driver_ownership {
         let mut drops = None;
         let driver = owner
             .open_driver(
-                identity(1).interaction_id,
+                identity(1),
                 move |job| {
                     Some(Validation {
                         identity: job,
@@ -1091,16 +1393,21 @@ mod native_driver_ownership {
             Ok(())
         })
         .unwrap();
+        let stop = driver.emergency_stop().unwrap();
         drop(driver);
+        assert_eq!(stop.record(), IntentRecording::Recorded);
         assert!(scheduler.armed());
         assert_eq!(drops.as_ref().unwrap().get(), 0);
         assert_cleanup_owner_busy(&owner);
         scheduler.fire();
+        assert_eq!(stop.0.upgrade().unwrap().intent.get(), Intent::Serviced);
+        assert_eq!(stop.record(), IntentRecording::AlreadyRecorded);
         assert!(scheduler.armed());
         let cancel = callback.unwrap();
         cancel();
         scheduler.fire();
         assert!(!scheduler.armed());
+        assert_eq!(stop.record(), IntentRecording::Stale);
         assert_eq!(drops.unwrap().get(), 1);
         let report = owner.take_report().unwrap();
         assert!(!report.can_abandon_unsubmitted());
@@ -1135,7 +1442,7 @@ mod native_driver_ownership {
             let mut drops = None;
             let driver = owner
                 .open_driver(
-                    identity(1).interaction_id,
+                    identity(1),
                     move |job| {
                         Some(Validation {
                             identity: job,
@@ -1164,6 +1471,8 @@ mod native_driver_ownership {
                 Ok(())
             })
             .unwrap();
+            let emergency = driver.emergency_stop().unwrap();
+            assert_eq!(emergency.record(), IntentRecording::Recorded);
             match failure {
                 "borrow" => owner.while_retaining_slot_is_borrowed(|| drop(driver)),
                 "scheduler" => {
@@ -1172,7 +1481,9 @@ mod native_driver_ownership {
                 }
                 "deadline" => {
                     drop(driver);
-                    clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
+                    clock.advance(POLL_INTERVAL * (MAX_STOP_POLLS as u32 - 1));
+                    assert_eq!(emergency.record(), IntentRecording::AlreadyRecorded);
+                    clock.advance(POLL_INTERVAL);
                     scheduler.fire();
                 }
                 "poll budget" => {
@@ -1207,7 +1518,7 @@ mod native_driver_ownership {
         let validated_clock = clock.clone();
         let driver = owner
             .open_driver(
-                identity(1).interaction_id,
+                identity(1),
                 move |job| {
                     Some(Validation {
                         identity: job,
@@ -1235,6 +1546,7 @@ mod native_driver_ownership {
             result,
             Err(Error::Native(native_speech::Error::VoiceUnavailable))
         );
+        let old = driver.emergency_stop().unwrap();
         drop(driver);
         assert!(!scheduler.armed());
         assert_cleanup_owner_busy(&owner);
@@ -1245,10 +1557,19 @@ mod native_driver_ownership {
             native_speech::Submission::NeverSubmitted
         );
         let later = owner.open_driver(
-            identity(1).interaction_id,
+            ContractIdentity {
+                session_id: SessionId::from_native_sequence(2).unwrap(),
+                ..identity(1)
+            },
             |_| None,
             |scope| Ok(native_speech::retirement_fixture(scope, clock, voice(), || {}).0),
         );
-        assert!(later.is_ok());
+        let later = later.unwrap();
+        assert_eq!(old.record(), IntentRecording::Stale);
+        Driver::turn(&later, |coordinator| {
+            assert!(!coordinator.emergency.as_ref().unwrap().revoked.get());
+            Ok(())
+        })
+        .unwrap();
     }
 }

@@ -7,8 +7,10 @@ use crate::voice_conversation::model::{
     AppRunId, ContractIdentity, Generation, InteractionId, SpeechState,
 };
 use crate::voice_conversation::native_speech::{
-    self, Evidence, Notice, OutputScope, SpeechOutput, StopOrigin, VoiceId,
+    self, Evidence, FlightBinding, Notice, OutputScope, SpeechOutput, StopOrigin, VoiceId,
 };
+use std::cell::Cell;
+use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -65,6 +67,98 @@ enum Cleanup {
     Unresolved,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Intent {
+    Open,
+    Pending,
+    Serviced,
+}
+
+struct StopLatch {
+    owner: OutputScope,
+    session: ContractIdentity,
+    revoked: Cell<bool>,
+    intent: Cell<Intent>,
+}
+
+impl StopLatch {
+    fn new(owner: OutputScope, session: ContractIdentity) -> Self {
+        Self {
+            owner,
+            session,
+            revoked: Cell::new(false),
+            intent: Cell::new(Intent::Open),
+        }
+    }
+
+    fn covers(&self, identity: ContractIdentity) -> bool {
+        self.session
+            == ContractIdentity {
+                turn_id: self.session.turn_id,
+                job_id: self.session.job_id,
+                ..identity
+            }
+    }
+
+    fn service(&self) -> bool {
+        if self.intent.get() != Intent::Pending {
+            return false;
+        }
+        self.intent.set(Intent::Serviced);
+        true
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IntentRecording {
+    Recorded,
+    AlreadyRecorded,
+    Stale,
+}
+
+/// Created only by the native driver constructor. A handle conveys only the
+/// ability to revoke its own scope and never keeps the driver or port alive.
+#[derive(Clone)]
+struct EmergencyStop(Weak<StopLatch>);
+
+impl EmergencyStop {
+    fn record(&self) -> IntentRecording {
+        let Some(latch) = self.0.upgrade() else {
+            return IntentRecording::Stale;
+        };
+        latch.revoked.set(true);
+        if latch.intent.get() == Intent::Open {
+            latch.intent.set(Intent::Pending);
+            IntentRecording::Recorded
+        } else {
+            IntentRecording::AlreadyRecorded
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RevokedOrMismatched;
+
+/// P2-03D may carry this read-only view through synchronous preparation. It
+/// currently checks coordinator entry only. It does not gate the native call.
+struct SubmissionStopCheck<'a> {
+    latch: &'a StopLatch,
+    expected: &'a FlightBinding,
+}
+
+impl SubmissionStopCheck<'_> {
+    fn check_stop(&self, flight: &FlightBinding) -> std::result::Result<(), RevokedOrMismatched> {
+        if self.latch.revoked.get()
+            || !self.latch.owner.accepts(flight)
+            || !self.latch.covers(flight.identity())
+            || !self.expected.matches(flight)
+        {
+            return Err(RevokedOrMismatched);
+        }
+        Ok(())
+    }
+}
+
 struct Admission {
     sequence: u64,
     admitted: MonotonicTime,
@@ -87,6 +181,7 @@ struct Coordinator<P: SpeechOutput, C, A> {
     logical: SpeechController,
     port: P,
     output_scope: OutputScope,
+    emergency: Option<Rc<StopLatch>>,
     clock: C,
     validate: A,
     admissions: [Option<Admission>; 2],
@@ -123,6 +218,7 @@ where
             logical: SpeechController::new(run, interaction, clock.now())?,
             port,
             output_scope: OutputScope::new(run, Generation::from_native_sequence(1)?),
+            emergency: None,
             clock,
             validate,
             admissions: [None, None],
@@ -136,7 +232,17 @@ where
         })
     }
 
-    fn check_open(&self) -> Result<()> {
+    fn service_emergency(&mut self) -> bool {
+        if self.emergency.as_ref().is_some_and(|latch| latch.service()) {
+            let _ = self.stop_for(StopOrigin::User);
+            true
+        } else {
+            false
+        }
+    }
+
+    fn check_open(&mut self) -> Result<()> {
+        self.service_emergency();
         if self.revoked {
             return Err(Error::Closed);
         }
@@ -159,7 +265,16 @@ where
         let now = self.clock.now();
         self.refresh(&now)?;
         self.check_open()?;
-        let validation = self.validation(identity).ok_or(Error::Unauthorized)?;
+        if self
+            .emergency
+            .as_ref()
+            .is_some_and(|latch| !latch.covers(identity))
+        {
+            return Err(Error::Unauthorized);
+        }
+        let validation = self.validation(identity);
+        self.check_open()?;
+        let validation = validation.ok_or(Error::Unauthorized)?;
         // Validate the domain before the controller creates a capacity lease.
         if let Err(error) = validation.deadline.is_expired(&now) {
             return Err(self.fail(error.into()));
@@ -178,7 +293,7 @@ where
             voice,
         });
         self.schedule(&now)?;
-        Ok(())
+        self.check_open()
     }
 
     /// Starts only the current active logical job, on an explicit coordinator
@@ -198,6 +313,14 @@ where
             .ok_or(Error::Protocol)?;
         let binding = job.callback.clone();
         let native_flight = self.output_scope.bind(binding.identity, binding.operation);
+        if let Some(latch) = &self.emergency {
+            SubmissionStopCheck {
+                latch,
+                expected: &native_flight,
+            }
+            .check_stop(&native_flight)
+            .map_err(|_| Error::Unauthorized)?;
+        }
 
         self.cleanup = Cleanup::Unresolved;
         let notice = match self.port.request(
@@ -215,6 +338,9 @@ where
             binding: binding.clone(),
             stop: None,
         });
+        // A request that reentered Stop can still have submitted. Keep the
+        // flight before service and suppress the positive submission notice.
+        self.check_open()?;
         if notice.identity != binding.identity {
             return Err(self.fail(Error::Protocol));
         }
@@ -224,9 +350,9 @@ where
                 // time remaining, without changing the original admission.
                 let after = self.clock.now();
                 self.refresh(&after)?;
-                if !self.revoked {
-                    self.schedule(&after)?;
-                }
+                self.check_open()?;
+                self.schedule(&after)?;
+                self.check_open()?;
             }
             Evidence::Failure(error) => {
                 self.fail(Error::Native(error));
@@ -255,6 +381,7 @@ where
     }
 
     fn refresh_inner(&mut self, now: &MonotonicTime) -> Result<Option<Validation>> {
+        self.check_open()?;
         self.logical.check_time(now)?;
         let active_identity = self.logical.callback().map(|binding| binding.identity);
         let active = self
@@ -262,11 +389,13 @@ where
             .active
             .as_ref()
             .and_then(|job| self.validation(job.callback.identity));
+        self.check_open()?;
         let pending = self
             .logical
             .pending
             .as_ref()
             .and_then(|job| self.validation(job.callback.identity));
+        self.check_open()?;
         if let Some(job) = &mut self.logical.active {
             Self::tighten(job, active.as_ref(), now)?;
         }
@@ -347,7 +476,7 @@ where
 
     fn wake(&mut self, wake: &Wake) -> Result<Notices> {
         let mut notices = [None; 2];
-        if !self.is_current(wake) {
+        if self.service_emergency() || !self.is_current(wake) {
             return Ok(notices);
         }
         self.wake = None;
@@ -363,7 +492,11 @@ where
             if self.flight.is_none() {
                 break;
             }
-            let Some(notice) = self.port.poll() else {
+            let notice = self.port.poll();
+            if self.service_emergency() {
+                return Ok([None; 2]);
+            }
+            let Some(notice) = notice else {
                 break;
             };
             now = self.clock.now();
@@ -377,6 +510,9 @@ where
         }
         if !self.revoked {
             self.schedule(&now)?;
+        }
+        if self.service_emergency() {
+            return Ok([None; 2]);
         }
         Ok(notices)
     }
@@ -440,6 +576,7 @@ where
     }
 
     fn fail(&mut self, error: Error) -> Error {
+        self.service_emergency();
         self.fault.get_or_insert(error);
         let origin = if error == Error::Deadline {
             StopOrigin::Deadline
@@ -455,6 +592,9 @@ where
     }
 
     fn stop_for(&mut self, origin: StopOrigin) -> Result<Option<Notice>> {
+        if let Some(latch) = &self.emergency {
+            latch.revoked.set(true);
+        }
         if self.revoked {
             return Ok(self
                 .flight
@@ -536,15 +676,18 @@ where
 
     fn shutdown(&mut self) -> Result<()> {
         if self.shutdown {
+            self.service_emergency();
             return Ok(());
         }
         self.shutdown = true;
+        self.service_emergency();
         let result = self.stop_for(StopOrigin::Shutdown);
         self.wake = None;
         if let Some(notice) = self.port.shutdown() {
             self.observe_cancellation(notice);
         }
         self.flight = None;
+        self.service_emergency();
         result.map(|_| ())
     }
 }
@@ -553,9 +696,7 @@ where
 mod macos {
     use super::*;
     use crate::voice_conversation::clock::NativeMonotonicClock;
-    use crate::voice_conversation::native_speech::{
-        FlightBinding, RetirementOutput, RetirementReport,
-    };
+    use crate::voice_conversation::native_speech::{RetirementOutput, RetirementReport};
     use core_foundation::base::{kCFAllocatorDefault, TCFType};
     use core_foundation::date::CFAbsoluteTimeGetCurrent;
     use core_foundation::runloop::{
@@ -563,11 +704,10 @@ mod macos {
         CFRunLoopTimerInvalidate, CFRunLoopTimerRef,
     };
     use objc2::MainThreadMarker;
-    use std::cell::{Cell, RefCell};
+    use std::cell::RefCell;
     use std::ffi::c_void;
     use std::marker::PhantomData;
     use std::panic::{catch_unwind, AssertUnwindSafe};
-    use std::rc::Rc;
 
     struct Handler {
         timer: CFRunLoopTimerRef,
@@ -716,6 +856,19 @@ mod macos {
         }
     }
 
+    // All borrows of the inner driver are controlled here. A busy timer
+    // callback therefore runs inside a turn with a guaranteed Stop checkpoint.
+    pub(super) struct DriverHandle<D> {
+        driver: Rc<RefCell<D>>,
+        emergency: Option<EmergencyStop>,
+    }
+
+    impl<D> DriverHandle<D> {
+        pub(super) fn emergency_stop(&self) -> Option<EmergencyStop> {
+            self.emergency.clone()
+        }
+    }
+
     pub(super) struct Driver<
         P: SpeechOutput,
         C: MonotonicClock,
@@ -740,38 +893,71 @@ mod macos {
         pub(super) fn new(
             scheduler: S,
             build: impl FnOnce() -> Result<Coordinator<P, C, A>>,
-        ) -> Result<Rc<RefCell<Self>>> {
+        ) -> Result<DriverHandle<Self>> {
             // Acquire before running any constructor that can open the port
             // or reenter on this thread. Failure drops the local reservation.
             let reservation = DriverReservation::acquire()?;
             let coordinator = build()?;
-            Ok(Rc::new(RefCell::new(Self {
-                coordinator,
-                timer: None,
-                scheduler,
-                _reservation: reservation,
-            })))
+            let emergency = coordinator
+                .emergency
+                .as_ref()
+                .map(|latch| EmergencyStop(Rc::downgrade(latch)));
+            Ok(DriverHandle {
+                emergency,
+                driver: Rc::new(RefCell::new(Self {
+                    coordinator,
+                    timer: None,
+                    scheduler,
+                    _reservation: reservation,
+                })),
+            })
         }
 
         pub(super) fn turn<T>(
+            handle: &DriverHandle<Self>,
+            action: impl FnOnce(&mut Coordinator<P, C, A>) -> Result<T>,
+        ) -> Result<T> {
+            Self::run_turn(&handle.driver, action)
+        }
+
+        fn run_turn<T>(
             owner: &Rc<RefCell<Self>>,
             action: impl FnOnce(&mut Coordinator<P, C, A>) -> Result<T>,
         ) -> Result<T> {
             let mut driver = owner.try_borrow_mut().map_err(|_| Error::Scheduler)?;
             // No timer remains registered across a native call or an owner turn.
             driver.timer = None;
+            driver.coordinator.service_emergency();
             let result = match catch_unwind(AssertUnwindSafe(|| action(&mut driver.coordinator))) {
                 Ok(result) => result,
                 Err(payload) => {
                     std::mem::forget(payload);
-                    Err(driver.coordinator.fail(Error::Scheduler))
+                    let error = driver.coordinator.fail(Error::Scheduler);
+                    // An unwind can interrupt the return from port.request.
+                    // Shutdown must still reach the port's own exact flight.
+                    let _ = driver.coordinator.shutdown();
+                    Err(error)
                 }
             };
-            Self::rearm(owner, &mut driver)?;
+            let drained = driver.coordinator.service_emergency();
+            let consumed = Self::rearm(owner, &mut driver)?;
+            // Clock/scheduler hooks can reenter while the driver is borrowed.
+            // A consumed one-shot from that turn is replaced by the Stop wake.
+            let mut during_arm = driver.coordinator.service_emergency();
+            if during_arm || consumed {
+                driver.timer = None;
+                if Self::rearm(owner, &mut driver)? {
+                    return Err(Self::scheduler_failed(&mut driver, Error::Scheduler));
+                }
+                during_arm |= driver.coordinator.service_emergency();
+            }
+            if drained || during_arm {
+                return result.and(Err(Error::Closed));
+            }
             result
         }
 
-        fn rearm(owner: &Rc<RefCell<Self>>, driver: &mut Self) -> Result<()> {
+        fn rearm(owner: &Rc<RefCell<Self>>, driver: &mut Self) -> Result<bool> {
             if let Some(wake) = driver.coordinator.wake.clone() {
                 let delay = wake.deadline.as_ref().map_or(Ok(wake.delay), |deadline| {
                     // Reinstalling a timer after a rejected owner operation
@@ -781,33 +967,49 @@ mod macos {
                     deadline.remaining(&now).map_err(Error::from)
                 });
                 let weak = Rc::downgrade(owner);
+                let busy = Rc::new(Cell::new(false));
+                let delivered = Rc::clone(&busy);
                 let timer = delay.and_then(|delay| {
-                    driver.scheduler.arm(delay, move || {
-                        if let Some(owner) = weak.upgrade() {
-                            Self::on_timer(&owner, &wake);
+                    match catch_unwind(AssertUnwindSafe(|| {
+                        driver.scheduler.arm(delay, move || {
+                            if let Some(owner) = weak.upgrade() {
+                                delivered.set(Self::on_timer(&owner, &wake));
+                            }
+                        })
+                    })) {
+                        Ok(result) => result,
+                        Err(payload) => {
+                            std::mem::forget(payload);
+                            Err(Error::Scheduler)
                         }
-                    })
+                    }
                 });
                 match timer {
                     Ok(timer) => driver.timer = Some(timer),
-                    Err(error) => {
-                        driver.coordinator.fail(error);
-                        driver.coordinator.wake = None;
-                        let _ = driver.coordinator.shutdown();
-                        return Err(error);
-                    }
+                    Err(error) => return Err(Self::scheduler_failed(driver, error)),
                 }
+                return Ok(busy.get());
             }
-            Ok(())
+            Ok(false)
         }
 
-        fn on_timer(owner: &Rc<RefCell<Self>>, wake: &Wake) {
-            let current = owner
-                .try_borrow()
-                .is_ok_and(|driver| driver.coordinator.is_current(wake));
+        fn scheduler_failed(driver: &mut Self, error: Error) -> Error {
+            driver.timer = None;
+            driver.coordinator.fail(error);
+            driver.coordinator.wake = None;
+            let _ = driver.coordinator.shutdown();
+            error
+        }
+
+        fn on_timer(owner: &Rc<RefCell<Self>>, wake: &Wake) -> bool {
+            let current = match owner.try_borrow() {
+                Ok(driver) => driver.coordinator.is_current(wake),
+                Err(_) => return true,
+            };
             if current {
-                let _ = Self::turn(owner, |coordinator| coordinator.wake(wake));
+                let _ = Self::run_turn(owner, |coordinator| coordinator.wake(wake));
             }
+            false
         }
     }
 
@@ -859,6 +1061,7 @@ mod macos {
     struct Retiring {
         port: Box<dyn RetirementOutput>,
         budget: CleanupBudget,
+        emergency: Rc<StopLatch>,
     }
 
     /// One owner survives each driver and its scheduler registration. The
@@ -894,13 +1097,16 @@ mod macos {
 
         pub(super) fn open_driver<A>(
             self: &Rc<Self>,
-            interaction: InteractionId,
+            session: ContractIdentity,
             validate: A,
             open_port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
-        ) -> Result<Rc<RefCell<Driver<ManagedOutput<C, S>, C, A, S>>>>
+        ) -> Result<DriverHandle<Driver<ManagedOutput<C, S>, C, A, S>>>
         where
             A: Fn(ContractIdentity) -> Option<Validation> + 'static,
         {
+            if session.app_run_id != self.run {
+                return Err(Error::Unauthorized);
+            }
             // Check before entering the driver constructor and its factory.
             if self
                 .obligation
@@ -922,15 +1128,23 @@ mod macos {
                     *scope = scope.next_owner().map_err(Error::Native)?;
                     scope.clone()
                 };
+                let emergency = Rc::new(StopLatch::new(scope.clone(), session));
                 let port = open_port(scope.clone())?;
                 let managed = ManagedOutput {
                     owner: Rc::clone(self),
                     scope: scope.clone(),
                     port: Some(port),
                     budget: None,
+                    emergency: Rc::clone(&emergency),
                 };
-                let mut coordinator =
-                    Coordinator::new(managed, self.clock.clone(), validate, self.run, interaction)?;
+                let mut coordinator = Coordinator::new(
+                    managed,
+                    self.clock.clone(),
+                    validate,
+                    self.run,
+                    session.interaction_id,
+                )?;
+                coordinator.emergency = Some(emergency);
                 coordinator.output_scope = scope;
                 Ok(coordinator)
             })
@@ -982,10 +1196,15 @@ mod macos {
             self: &Rc<Self>,
             mut port: Box<dyn RetirementOutput>,
             budget: CleanupBudget,
+            emergency: Rc<StopLatch>,
         ) -> Option<Notice> {
             let attempt = port.begin_retirement();
+            // The bridge already attempted Stop for this port (or had no
+            // active flight). A reentrant intent needs no second native attempt.
+            emergency.service();
             if attempt.is_none() || budget.next_delay(&self.clock.now()).is_none() {
                 self.finish(port);
+                emergency.service();
                 return attempt;
             }
             // No native calls run while borrowing the retained-port slot. On a
@@ -997,11 +1216,16 @@ mod macos {
                 .ok()
                 .filter(|slot| slot.is_none());
             if let Some(mut slot) = installed {
-                *slot = Some(Retiring { port, budget });
+                *slot = Some(Retiring {
+                    port,
+                    budget,
+                    emergency,
+                });
                 drop(slot);
                 self.schedule_retirement();
             } else {
                 self.finish(port);
+                emergency.service();
             }
             attempt
         }
@@ -1016,19 +1240,26 @@ mod macos {
                 let weak = Rc::downgrade(self);
                 let wake = Rc::new(());
                 *self.wake.borrow_mut() = Some(Rc::clone(&wake));
+                let registration = Rc::new(Cell::new(false));
+                let delivery = Rc::clone(&registration);
                 let timer = catch_unwind(AssertUnwindSafe(|| {
                     self.scheduler.arm(delay, move || {
-                        if let Some(owner) = weak.upgrade() {
-                            owner.poll_retirement(&wake);
+                        // Unexpected inline delivery consumes the wake. Let
+                        // the registering owner dispose instead of recursing.
+                        if delivery.replace(true) {
+                            if let Some(owner) = weak.upgrade() {
+                                owner.poll_retirement(&wake);
+                            }
                         }
                     })
                 }));
+                let inline = registration.replace(true);
                 match timer {
-                    Ok(Ok(timer)) => {
+                    Ok(Ok(timer)) if !inline => {
                         *self.timer.borrow_mut() = Some(timer);
                         return;
                     }
-                    Ok(Err(_)) => (),
+                    Ok(_) => (),
                     Err(payload) => std::mem::forget(payload),
                 }
             }
@@ -1036,6 +1267,7 @@ mod macos {
             let retiring = self.retiring.borrow_mut().take();
             if let Some(retiring) = retiring {
                 self.finish(retiring.port);
+                retiring.emergency.service();
             }
         }
 
@@ -1053,8 +1285,10 @@ mod macos {
             self.timer.borrow_mut().take();
             let retiring = self.retiring.borrow_mut().take();
             let Some(mut retiring) = retiring else { return };
+            retiring.emergency.service();
             if retiring.budget.poll(self.clock.now()) {
                 retiring.port.poll();
+                retiring.emergency.service();
                 if self.collect(&mut *retiring.port) {
                     return;
                 }
@@ -1062,6 +1296,7 @@ mod macos {
                 self.schedule_retirement();
             } else {
                 self.finish(retiring.port);
+                retiring.emergency.service();
             }
         }
     }
@@ -1074,6 +1309,7 @@ mod macos {
         scope: OutputScope,
         port: Option<Box<dyn RetirementOutput>>,
         budget: Option<CleanupBudget>,
+        emergency: Rc<StopLatch>,
     }
 
     impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> ManagedOutput<C, S> {
@@ -1098,6 +1334,11 @@ mod macos {
             if !self.scope.accepts(&binding) {
                 return Err(native_speech::Error::StaleJob);
             }
+            // Sample before publishing the obligation or entering native code.
+            let before = self.owner.clock.now();
+            if self.emergency.revoked.get() {
+                return Err(native_speech::Error::Closed);
+            }
             {
                 let mut obligation = self
                     .owner
@@ -1116,8 +1357,6 @@ mod macos {
                 }
                 *obligation = Some(binding.clone());
             }
-            // Sample before the call in case submission itself requests Stop.
-            let before = self.owner.clock.now();
             let result = port.request(binding, sequence, text, voice, admitted);
             if matches!(
                 result,
@@ -1197,7 +1436,7 @@ mod macos {
                 .budget
                 .take()
                 .unwrap_or_else(|| CleanupBudget::new(self.owner.clock.now()));
-            self.owner.handoff(port, budget)
+            self.owner.handoff(port, budget, Rc::clone(&self.emergency))
         }
     }
 
@@ -1209,6 +1448,7 @@ mod macos {
             // The obligation was recorded before native submission.
             if let Some(port) = self.port.take() {
                 self.owner.finish(port);
+                self.emergency.service();
             }
         }
     }
@@ -1222,15 +1462,15 @@ mod macos {
 
     fn open<A>(
         main: MainThreadMarker,
-        run: AppRunId,
-        interaction: InteractionId,
+        session: ContractIdentity,
         validate: A,
     ) -> Result<
-        Rc<RefCell<Driver<ManagedOutput<SharedClock, MainRunLoop>, SharedClock, A, MainRunLoop>>>,
+        DriverHandle<Driver<ManagedOutput<SharedClock, MainRunLoop>, SharedClock, A, MainRunLoop>>,
     >
     where
         A: Fn(ContractIdentity) -> Option<Validation> + 'static,
     {
+        let run = session.app_run_id;
         let owner = NATIVE_OWNER
             .try_with(|slot| {
                 let mut slot = slot.try_borrow_mut().map_err(|_| Error::Busy)?;
@@ -1249,7 +1489,7 @@ mod macos {
             })
             .map_err(|_| Error::Scheduler)??;
         let clock = owner.clock.clone();
-        owner.open_driver(interaction, validate, |scope| {
+        owner.open_driver(session, validate, |scope| {
             let port = native_speech::open(main, clock, scope).map_err(Error::Native)?;
             Ok(Box::new(port))
         })
@@ -1259,11 +1499,13 @@ mod macos {
     fn main_driver_links_without_installing_timers_or_opening_the_port() {
         type Link = fn(MainThreadMarker, ContractIdentity, VoiceId) -> Result<()>;
         let entry: Link = |main, identity, voice| {
-            let driver = open(main, identity.app_run_id, identity.interaction_id, |_| None)?;
+            let driver = open(main, identity, |_| None)?;
+            let emergency = driver.emergency_stop().ok_or(Error::Protocol)?;
             Driver::turn(&driver, |coordinator| {
                 coordinator.admit(identity, 1, String::new(), voice)
             })?;
             Driver::turn(&driver, Coordinator::submit)?;
+            let _ = emergency.record();
             Driver::turn(&driver, Coordinator::stop)?;
             Driver::turn(&driver, Coordinator::shutdown)
         };
