@@ -3,7 +3,7 @@
 //! evidence as data. There is no callback into the caller or a follow-up action.
 use super::clock::{Deadline, MonotonicClock, MonotonicTime};
 use super::limits::{checked_total, MAX_SPEECH_JOB_TEXT_BYTES, SPEECH_OUTPUT_DEADLINE};
-use super::model::{AppRunId, ContractIdentity, JobId, SpeechOutcome};
+use super::model::{AppRunId, ContractIdentity, Generation, JobId, SpeechOutcome};
 use super::ContractError;
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
@@ -35,7 +35,7 @@ impl From<ContractError> for Error {
     }
 }
 
-type Result<T> = std::result::Result<T, Error>;
+pub(super) type Result<T> = std::result::Result<T, Error>;
 
 fn bounded_field(value: &str, max_bytes: usize) -> bool {
     !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
@@ -112,6 +112,171 @@ pub(super) struct Notice {
     pub(super) evidence: Evidence,
 }
 
+/// Native-owned scope. A route revision is a binding supplied by the owner,
+/// not evidence that an OS route has been inspected.
+#[derive(Clone)]
+pub(super) struct OutputScope {
+    authority: Arc<()>,
+    run: AppRunId,
+    epoch: Generation,
+    route: Generation,
+}
+
+impl OutputScope {
+    pub(super) fn new(run: AppRunId, route: Generation) -> Self {
+        Self {
+            authority: Arc::new(()),
+            run,
+            epoch: Generation::from_native_sequence(1).expect("nonzero initial epoch"),
+            route,
+        }
+    }
+
+    pub(super) fn next_owner(&self) -> Result<Self> {
+        Ok(Self {
+            epoch: self.epoch.checked_next()?,
+            ..self.clone()
+        })
+    }
+
+    pub(super) fn bind(&self, identity: ContractIdentity, operation: u64) -> FlightBinding {
+        FlightBinding {
+            scope: self.clone(),
+            identity,
+            operation,
+            nonce: Arc::new(()),
+        }
+    }
+
+    fn matches(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.authority, &other.authority)
+            && self.run == other.run
+            && self.epoch == other.epoch
+            && self.route == other.route
+    }
+
+    pub(super) fn accepts(&self, binding: &FlightBinding) -> bool {
+        self.matches(&binding.scope)
+            && self.run == binding.identity.app_run_id
+            && binding.operation != 0
+    }
+}
+
+#[derive(Clone)]
+pub(super) struct FlightBinding {
+    scope: OutputScope,
+    identity: ContractIdentity,
+    operation: u64,
+    nonce: Arc<()>,
+}
+
+impl FlightBinding {
+    pub(super) fn identity(&self) -> ContractIdentity {
+        self.identity
+    }
+
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        self.scope.matches(&other.scope)
+            && self.identity == other.identity
+            && self.operation == other.operation
+            && Arc::ptr_eq(&self.nonce, &other.nonce)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Submission {
+    NeverSubmitted,
+    PossiblySubmitted,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum StopOrigin {
+    User,
+    CoordinatorFailure,
+    SubmissionFailure,
+    Deadline,
+    InvalidCallback,
+    Shutdown,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Terminal {
+    Finished,
+    Cancelled { stop_requested: bool },
+    Unresolved,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Attachment {
+    NeverAttempted,
+    MayHaveAttached,
+    Attached,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Detach {
+    NotNeeded,
+    VerifiedNil,
+    ReadbackUnknown,
+    SetterFailed,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum RetirementUncertainty {
+    NoSubmissionOrDelegate,
+    DelegateAssociationUnresolved,
+    OutputReleaseUnverified,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum CallbackDisposition {
+    NoDelegateAttempted,
+    CallbackMayStillBeReturning,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum ResourceRetirement {
+    OwnedFlightRelinquished,
+}
+
+/// Diagnostic facts. Only the opaque report carries their originating flight.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) struct RetirementFacts {
+    pub(super) submission: Submission,
+    pub(super) first_stop: Option<(StopOrigin, StopAttempt)>,
+    pub(super) terminal: Terminal,
+    pub(super) attachment: Attachment,
+    pub(super) detach: Detach,
+    pub(super) callbacks: CallbackDisposition,
+    pub(super) resources: ResourceRetirement,
+    pub(super) uncertainty: RetirementUncertainty,
+}
+
+/// Issued only after the bridge has relinquished its flight resources.
+/// Terminal and delegate facts describe different events, and neither
+/// establishes physical output release. A callback already inside the
+/// delegate may still return after nil readback; it sees a closed/old mailbox.
+pub(super) struct RetirementReport {
+    binding: FlightBinding,
+    facts: RetirementFacts,
+}
+
+impl RetirementReport {
+    pub(super) fn matches(&self, binding: &FlightBinding) -> bool {
+        self.binding.matches(binding)
+    }
+
+    pub(super) fn facts(&self) -> RetirementFacts {
+        self.facts
+    }
+
+    /// The report itself is the bridge-owned retirement event. This narrow
+    /// result can abandon only a preparation that never attempted speech.
+    pub(super) fn can_abandon_unsubmitted(&self) -> bool {
+        self.facts().uncertainty == RetirementUncertainty::NoSubmissionOrDelegate
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 struct NativeObjects {
     synthesizer: usize,
@@ -146,6 +311,7 @@ struct CallbackState {
     observation: Observation,
     start_pending: bool,
     stopping: bool,
+    terminal: Terminal,
 }
 
 /// One mailbox per utterance. No native references are transported across
@@ -163,6 +329,7 @@ impl Inbox {
                 observation: Observation::Unsubmitted,
                 start_pending: false,
                 stopping: false,
+                terminal: Terminal::Unresolved,
             }),
         }
     }
@@ -186,6 +353,14 @@ impl Inbox {
                 Observation::Started
             }
             (Observation::Started, Callback::Finish, false) => Observation::Finished,
+            (Observation::Started, Callback::Finish, true) => {
+                // Preserve a matching terminal fact without restoring a
+                // logical Finished notice after Stop.
+                if state.terminal == Terminal::Unresolved {
+                    state.terminal = Terminal::Finished;
+                }
+                Observation::Started
+            }
             (Observation::Waiting, Callback::Finish, false) => Observation::Invalid,
             (Observation::Waiting | Observation::Started, Callback::Cancel, stopping) => {
                 Observation::Cancelled {
@@ -194,13 +369,23 @@ impl Inbox {
             }
             (current, _, _) => current,
         };
+        if state.terminal == Terminal::Unresolved {
+            state.terminal = match state.observation {
+                Observation::Finished => Terminal::Finished,
+                Observation::Cancelled { stop_requested } => Terminal::Cancelled { stop_requested },
+                _ => Terminal::Unresolved,
+            };
+        }
     }
 
     fn begin_stop(&self) {
         if let Ok(mut state) = self.state.lock() {
             state.stopping = true;
             state.start_pending = false;
-            if !matches!(state.observation, Observation::Cancelled { .. }) {
+            if !matches!(
+                state.observation,
+                Observation::Started | Observation::Cancelled { .. }
+            ) {
                 state.observation = Observation::Waiting;
             }
         }
@@ -223,10 +408,13 @@ impl Inbox {
         Some(evidence)
     }
 
-    fn close(&self) {
+    fn close(&self) -> Terminal {
         if let Ok(mut state) = self.state.lock() {
             state.start_pending = false;
             state.observation = Observation::Closed;
+            state.terminal
+        } else {
+            Terminal::Unresolved
         }
     }
 }
@@ -240,7 +428,7 @@ trait Backend: Sized {
     fn attach(&mut self, inbox: Arc<Inbox>) -> Result<()>;
     fn speak(&self, utterance: &Self::Utterance) -> Result<()>;
     fn stop_immediately(&self) -> Result<bool>;
-    fn detach(&mut self) -> Result<()>;
+    fn detach(&mut self) -> Detach;
 }
 
 fn validate_inventory(voices: Vec<Voice>) -> Result<Vec<Voice>> {
@@ -259,22 +447,28 @@ fn validate_inventory(voices: Vec<Voice>) -> Result<Vec<Voice>> {
 pub(super) trait SpeechOutput {
     fn request(
         &mut self,
-        identity: ContractIdentity,
+        binding: FlightBinding,
         sequence: u64,
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
     ) -> Result<Notice>;
-    fn stop(&mut self, identity: ContractIdentity) -> Result<Notice>;
+    fn stop(&mut self, identity: ContractIdentity, origin: StopOrigin) -> Result<Notice>;
     fn poll(&mut self) -> Option<Notice>;
     fn shutdown(&mut self) -> Option<Notice>;
 }
 
+pub(super) trait RetirementOutput: SpeechOutput {
+    fn begin_retirement(&mut self) -> Option<Notice>;
+    fn take_retirement_report(&mut self) -> Option<RetirementReport>;
+}
+
 struct Flight<U> {
+    binding: FlightBinding,
     utterance: U,
     inbox: Arc<Inbox>,
     deadline: Deadline,
-    stop_attempt: Option<StopAttempt>,
+    first_stop: Option<(StopOrigin, StopAttempt)>,
 }
 
 impl<U> Flight<U> {
@@ -291,72 +485,110 @@ impl<U> Flight<U> {
 struct Port<B: Backend, C: MonotonicClock> {
     backend: B,
     clock: C,
-    run: AppRunId,
+    scope: OutputScope,
     last_sequence: u64,
     active: Option<Flight<B::Utterance>>,
     closed: bool,
+    retired: Option<RetirementReport>,
 }
 
 impl<B: Backend, C: MonotonicClock> Port<B, C> {
-    fn new(backend: Result<B>, clock: C, run: AppRunId) -> Result<Self> {
+    fn new(backend: Result<B>, clock: C, scope: OutputScope) -> Result<Self> {
         Ok(Self {
             backend: backend?,
             clock,
-            run,
+            scope,
             last_sequence: 0,
             active: None,
             closed: false,
+            retired: None,
         })
     }
 
-    fn request_stop(backend: &B, flight: &mut Flight<B::Utterance>) -> Notice {
-        let attempt = *flight.stop_attempt.get_or_insert_with(|| {
+    fn request_stop(backend: &B, flight: &mut Flight<B::Utterance>, origin: StopOrigin) -> Notice {
+        let (_, attempt) = *flight.first_stop.get_or_insert_with(|| {
             flight.inbox.begin_stop();
-            match backend.stop_immediately() {
+            let attempt = match backend.stop_immediately() {
                 Ok(true) => StopAttempt::Accepted,
                 Ok(false) => StopAttempt::Rejected,
                 Err(_) => StopAttempt::Failed,
-            }
+            };
+            (origin, attempt)
         });
         flight.notice(Evidence::CancellationUnconfirmed(attempt))
     }
 
-    fn clear_delegate(&mut self, inbox: &Inbox) {
-        inbox.close();
-        if self.backend.detach().is_err() {
-            // A failing detach cannot grant a fresh slot.
+    fn clear_delegate(&mut self, inbox: &Inbox) -> (Terminal, Detach) {
+        let terminal = inbox.close();
+        let detach = self.backend.detach();
+        if detach != Detach::VerifiedNil {
             self.closed = true;
         }
+        (terminal, detach)
     }
 
     fn retire(&mut self) {
         if let Some(flight) = self.active.take() {
-            self.clear_delegate(&flight.inbox);
+            let (terminal, detach) = self.clear_delegate(&flight.inbox);
+            let binding = flight.binding.clone();
+            let first_stop = flight.first_stop;
+            drop(flight);
+            self.retired = Some(RetirementReport {
+                binding,
+                facts: RetirementFacts {
+                    submission: Submission::PossiblySubmitted,
+                    first_stop,
+                    terminal,
+                    attachment: Attachment::Attached,
+                    detach,
+                    callbacks: CallbackDisposition::CallbackMayStillBeReturning,
+                    resources: ResourceRetirement::OwnedFlightRelinquished,
+                    uncertainty: RetirementUncertainty::OutputReleaseUnverified,
+                },
+            });
         }
     }
-}
 
-impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
-    fn request(
+    fn unsubmitted(
         &mut self,
-        identity: ContractIdentity,
+        binding: FlightBinding,
+        attachment: Attachment,
+        detach: Detach,
+        error: Error,
+    ) -> Result<Notice> {
+        self.retired = Some(RetirementReport {
+            binding,
+            facts: RetirementFacts {
+                submission: Submission::NeverSubmitted,
+                first_stop: None,
+                terminal: Terminal::Unresolved,
+                attachment,
+                detach,
+                callbacks: match attachment {
+                    Attachment::NeverAttempted => CallbackDisposition::NoDelegateAttempted,
+                    _ => CallbackDisposition::CallbackMayStillBeReturning,
+                },
+                resources: ResourceRetirement::OwnedFlightRelinquished,
+                uncertainty: match detach {
+                    Detach::NotNeeded | Detach::VerifiedNil => {
+                        RetirementUncertainty::NoSubmissionOrDelegate
+                    }
+                    Detach::ReadbackUnknown | Detach::SetterFailed => {
+                        RetirementUncertainty::DelegateAssociationUnresolved
+                    }
+                },
+            },
+        });
+        Err(error)
+    }
+
+    fn prepare(
+        &mut self,
         sequence: u64,
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
-    ) -> Result<Notice> {
-        if self.closed {
-            return Err(Error::Closed);
-        }
-        if self.active.is_some() {
-            return Err(Error::Busy);
-        }
-        if identity.app_run_id != self.run
-            || sequence <= self.last_sequence
-            || JobId::from_native_sequence(sequence)? != identity.job_id
-        {
-            return Err(Error::StaleJob);
-        }
+    ) -> Result<(B::Utterance, NativeObjects, Deadline)> {
         let bytes = u64::try_from(text.len()).map_err(|_| ContractError::Overflow)?;
         checked_total(0, bytes, MAX_SPEECH_JOB_TEXT_BYTES)?;
         if text.trim().is_empty() || text.contains('\0') {
@@ -380,81 +612,138 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
         if objects.synthesizer == 0 || objects.utterance == 0 {
             return Err(Error::NativeFailure);
         }
+        Ok((utterance, objects, deadline))
+    }
+}
+
+impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
+    fn request(
+        &mut self,
+        binding: FlightBinding,
+        sequence: u64,
+        text: &str,
+        voice: &VoiceId,
+        admitted: &MonotonicTime,
+    ) -> Result<Notice> {
+        if self.closed {
+            return Err(Error::Closed);
+        }
+        if self.active.is_some() {
+            return Err(Error::Busy);
+        }
+        let identity = binding.identity();
+        if !self.scope.accepts(&binding)
+            || sequence <= self.last_sequence
+            || JobId::from_native_sequence(sequence)? != identity.job_id
+        {
+            return Err(Error::StaleJob);
+        }
+        if self.retired.is_some() {
+            return Err(Error::Busy);
+        }
+
+        let (utterance, objects, deadline) = match self.prepare(sequence, text, voice, admitted) {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                return self.unsubmitted(
+                    binding,
+                    Attachment::NeverAttempted,
+                    Detach::NotNeeded,
+                    error,
+                )
+            }
+        };
         let inbox = Arc::new(Inbox::new(CallbackKey { identity, objects }));
         if let Err(error) = self.backend.attach(Arc::clone(&inbox)) {
-            self.clear_delegate(&inbox);
-            return Err(error);
+            let (_, detach) = self.clear_delegate(&inbox);
+            drop(utterance);
+            drop(inbox);
+            return self.unsubmitted(binding, Attachment::MayHaveAttached, detach, error);
         }
-        if deadline.is_expired(&self.clock.now()).unwrap_or(true) {
-            self.clear_delegate(&inbox);
-            return Err(Error::Deadline);
-        }
-        if let Err(error) = inbox.arm() {
-            self.clear_delegate(&inbox);
-            return Err(error);
+        let ready = if deadline.is_expired(&self.clock.now()).unwrap_or(true) {
+            Err(Error::Deadline)
+        } else {
+            inbox.arm()
+        };
+        if let Err(error) = ready {
+            let (_, detach) = self.clear_delegate(&inbox);
+            drop(utterance);
+            drop(inbox);
+            return self.unsubmitted(binding, Attachment::Attached, detach, error);
         }
         self.active = Some(Flight {
+            binding,
             utterance,
             inbox,
             deadline,
-            stop_attempt: None,
+            first_stop: None,
         });
-        // Publish the slot before invoking AVFoundation, which may call back
-        // inline. No mailbox lock is held across a backend method.
+        // Publish the possibly submitted flight before entering native code.
         let flight = self.active.as_mut().expect("just installed the flight");
         if let Err(error) = self.backend.speak(&flight.utterance) {
-            // Native submission can fail after crossing the boundary. Keep
-            // ownership until cancellation is observed or the port shuts down.
-            Self::request_stop(&self.backend, flight);
+            Self::request_stop(&self.backend, flight, StopOrigin::SubmissionFailure);
             return Ok(flight.notice(Evidence::Failure(error)));
         }
         Ok(flight.notice(Evidence::Requested))
     }
 
-    fn stop(&mut self, identity: ContractIdentity) -> Result<Notice> {
+    fn stop(&mut self, identity: ContractIdentity, origin: StopOrigin) -> Result<Notice> {
         let flight = self.active.as_mut().ok_or(Error::StaleJob)?;
-        if flight.inbox.key.identity != identity {
+        if flight.binding.identity() != identity {
             return Err(Error::StaleJob);
         }
-        Ok(Self::request_stop(&self.backend, flight))
+        Ok(Self::request_stop(&self.backend, flight, origin))
     }
 
-    /// The owner polls with its run-loop scheduling. Expiry suppresses buffered
-    /// success and attempts immediate stop. Missing evidence keeps the slot held.
     fn poll(&mut self) -> Option<Notice> {
         let flight = self.active.as_mut()?;
-        if flight.stop_attempt.is_none()
+        if flight.first_stop.is_none()
             && flight
                 .deadline
                 .is_expired(&self.clock.now())
                 .unwrap_or(true)
         {
-            Self::request_stop(&self.backend, flight);
+            Self::request_stop(&self.backend, flight, StopOrigin::Deadline);
             return Some(flight.notice(Evidence::Failure(Error::Deadline)));
         }
         let evidence = flight.inbox.take_evidence()?;
         let notice = flight.notice(evidence);
         match evidence {
             Evidence::Finished | Evidence::Cancelled { .. } => self.retire(),
-            Evidence::Failure(_) if flight.stop_attempt.is_none() => {
-                Self::request_stop(&self.backend, flight);
+            Evidence::Failure(_) if flight.first_stop.is_none() => {
+                Self::request_stop(&self.backend, flight, StopOrigin::InvalidCallback);
             }
-            Evidence::Failure(_) => return None, // e.g. a poisoned mailbox after stop
+            Evidence::Failure(_) => return None,
             _ => {}
         }
         Some(notice)
     }
 
     fn shutdown(&mut self) -> Option<Notice> {
-        self.closed = true;
-        let flight = self.active.as_mut()?;
-        let unconfirmed = Self::request_stop(&self.backend, flight);
+        let unconfirmed = self.begin_retirement()?;
+        let flight = self.active.as_ref().expect("retirement requires a flight");
         let notice = match flight.inbox.take_evidence() {
             Some(evidence @ Evidence::Cancelled { .. }) => flight.notice(evidence),
             _ => unconfirmed,
         };
         self.retire();
         Some(notice)
+    }
+}
+
+impl<B: Backend, C: MonotonicClock> RetirementOutput for Port<B, C> {
+    fn begin_retirement(&mut self) -> Option<Notice> {
+        self.closed = true;
+        let flight = self.active.as_mut()?;
+        Some(Self::request_stop(
+            &self.backend,
+            flight,
+            StopOrigin::Shutdown,
+        ))
+    }
+
+    fn take_retirement_report(&mut self) -> Option<RetirementReport> {
+        self.retired.take()
     }
 }
 
@@ -587,9 +876,9 @@ mod macos {
     pub(in crate::voice_conversation) fn open(
         main_thread: MainThreadMarker,
         clock: impl MonotonicClock,
-        run: AppRunId,
-    ) -> Result<impl SpeechOutput> {
-        Port::new(MacBackend::new(main_thread), clock, run)
+        scope: OutputScope,
+    ) -> Result<impl RetirementOutput> {
+        Port::new(MacBackend::new(main_thread), clock, scope)
     }
 
     // Wry already enables objc2's exception API in the locked macOS build.
@@ -805,21 +1094,43 @@ mod macos {
             })
         }
 
-        fn detach(&mut self) -> Result<()> {
-            let result = native_call(|| {
-                // SAFETY: The SDK declares a weak nullable delegate. Passing
-                // nil clears the association and setDelegate: returns void.
+        fn detach(&mut self) -> Detach {
+            let setter = native_call(|| {
+                // SAFETY: The SDK declares a weak nullable delegate. The
+                // retained synthesizer accepts a nil object and returns void.
                 unsafe {
                     let _: () =
                         msg_send![&*self.synthesizer, setDelegate: std::ptr::null::<AnyObject>()];
                 }
                 Ok(())
             });
+            let disposition = match setter {
+                Err(_) => Detach::SetterFailed,
+                Ok(()) => {
+                    let readback = native_call(|| {
+                        // SAFETY: The SDK getter returns a nullable Objective-C
+                        // object at +0. The bridge still retains its delegate,
+                        // so a nil result cannot be due to dropping that retain.
+                        let delegate: Option<Retained<AnyObject>> =
+                            unsafe { msg_send![&*self.synthesizer, delegate] };
+                        Ok(delegate.is_none())
+                    });
+                    match readback {
+                        Ok(true) => Detach::VerifiedNil,
+                        Ok(false) | Err(_) => Detach::ReadbackUnknown,
+                    }
+                }
+            };
+            // Nil readback does not join callbacks already on the stack. The
+            // inbox was closed before detach and stays retained by the delegate.
             self.delegate = None;
-            result
+            disposition
         }
     }
 }
 
 #[path = "native_speech_tests.rs"]
 mod tests;
+
+#[cfg(all(test, target_os = "macos"))]
+pub(super) use tests::retirement_fixture;

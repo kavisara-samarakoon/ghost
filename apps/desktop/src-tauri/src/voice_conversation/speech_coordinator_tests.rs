@@ -91,12 +91,13 @@ impl Default for Script {
 impl SpeechOutput for Script {
     fn request(
         &mut self,
-        identity: ContractIdentity,
+        binding: native_speech::FlightBinding,
         sequence: u64,
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
     ) -> NativeResult<Notice> {
+        let identity = binding.identity();
         self.requests.push(Request {
             identity,
             sequence,
@@ -111,7 +112,7 @@ impl SpeechOutput for Script {
             .map(|evidence| Notice { identity, evidence })
     }
 
-    fn stop(&mut self, identity: ContractIdentity) -> NativeResult<Notice> {
+    fn stop(&mut self, identity: ContractIdentity, _origin: StopOrigin) -> NativeResult<Notice> {
         self.stops.push(identity);
         if let Some(evidence) = self.during_stop.take() {
             self.notices.push_back(Notice { identity, evidence });
@@ -779,12 +780,13 @@ fn logical_epoch_exhaustion_cannot_obstruct_immediate_stop() {
 
 #[cfg(target_os = "macos")]
 mod native_driver_ownership {
-    use super::super::macos::{Driver, Scheduler};
+    use super::super::macos::{CleanupOwner, Driver, Scheduler};
     use super::*;
 
     #[derive(Default)]
     struct Schedule {
         arms: usize,
+        fail_next: bool,
         action: Option<Box<dyn FnOnce()>>,
     }
 
@@ -821,6 +823,9 @@ mod native_driver_ownership {
 
         fn arm(&self, _delay: Duration, action: impl FnOnce() + 'static) -> Result<FakeTimer> {
             let mut schedule = self.0.borrow_mut();
+            if std::mem::take(&mut schedule.fail_next) {
+                return Err(Error::Scheduler);
+            }
             if schedule.action.is_some() {
                 return Err(Error::Scheduler);
             }
@@ -1014,5 +1019,236 @@ mod native_driver_ownership {
             Ok(())
         })
         .unwrap();
+    }
+
+    fn cleanup_owner(
+        clock: Clock,
+        scheduler: FakeScheduler,
+    ) -> Rc<CleanupOwner<Clock, FakeScheduler>> {
+        CleanupOwner::new(
+            identity(1).app_run_id,
+            Generation::from_native_sequence(1).unwrap(),
+            clock,
+            scheduler,
+        )
+    }
+
+    fn assert_cleanup_owner_busy(owner: &Rc<CleanupOwner<Clock, FakeScheduler>>) {
+        let result = owner.open_driver(
+            identity(1).interaction_id,
+            |_| None,
+            |_| panic!("an unresolved flight must block the factory"),
+        );
+        assert!(matches!(result, Err(Error::Busy)));
+    }
+
+    #[test]
+    fn retained_cleanup_collects_late_cancel_across_drop_without_admitting_a_replacement() {
+        let scheduler = FakeScheduler::default();
+        let clock = Clock::new();
+        let owner = cleanup_owner(clock.clone(), scheduler.clone());
+        let during_stop = owner.clone();
+        let on_stop = scheduler.clone();
+        let validated_clock = clock.clone();
+        let mut callback = None;
+        let mut drops = None;
+        let driver = owner
+            .open_driver(
+                identity(1).interaction_id,
+                move |job| {
+                    Some(Validation {
+                        identity: job,
+                        role: ProviderRole::Tts,
+                        deadline: Deadline::after(validated_clock.now(), Duration::from_secs(300))
+                            .unwrap(),
+                        source_eligible: true,
+                        speaker_allowed: true,
+                        cloud_tts_allowed: false,
+                    })
+                },
+                |scope| {
+                    let (port, cancel, count) = native_speech::retirement_fixture(
+                        scope,
+                        clock.clone(),
+                        voice(),
+                        move || {
+                            assert!(
+                                !on_stop.armed(),
+                                "driver timer must be invalidated before Stop"
+                            );
+                            assert_cleanup_owner_busy(&during_stop);
+                        },
+                    );
+                    callback = Some(cancel);
+                    drops = Some(count);
+                    Ok(port)
+                },
+            )
+            .unwrap();
+        Driver::turn(&driver, |coordinator| {
+            coordinator.admit(identity(1), 1, "Synthetic text".into(), voice())?;
+            coordinator.submit()?;
+            Ok(())
+        })
+        .unwrap();
+        drop(driver);
+        assert!(scheduler.armed());
+        assert_eq!(drops.as_ref().unwrap().get(), 0);
+        assert_cleanup_owner_busy(&owner);
+        scheduler.fire();
+        assert!(scheduler.armed());
+        let cancel = callback.unwrap();
+        cancel();
+        scheduler.fire();
+        assert!(!scheduler.armed());
+        assert_eq!(drops.unwrap().get(), 1);
+        let report = owner.take_report().unwrap();
+        assert!(!report.can_abandon_unsubmitted());
+        let facts = report.facts();
+        assert_eq!(
+            facts.terminal,
+            native_speech::Terminal::Cancelled {
+                stop_requested: true
+            }
+        );
+        assert_eq!(facts.detach, native_speech::Detach::VerifiedNil);
+        assert_eq!(
+            facts.resources,
+            native_speech::ResourceRetirement::OwnedFlightRelinquished
+        );
+        assert_eq!(
+            facts.first_stop,
+            Some((StopOrigin::Shutdown, StopAttempt::Accepted))
+        );
+        cancel();
+        assert!(owner.take_report().is_none());
+        assert_cleanup_owner_busy(&owner);
+    }
+
+    #[test]
+    fn retention_budget_and_failed_handoff_dispose_resources_without_clearing_the_barrier() {
+        for failure in ["poll budget", "deadline", "scheduler", "borrow"] {
+            let scheduler = FakeScheduler::default();
+            let clock = Clock::new();
+            let owner = cleanup_owner(clock.clone(), scheduler.clone());
+            let validated_clock = clock.clone();
+            let mut drops = None;
+            let driver = owner
+                .open_driver(
+                    identity(1).interaction_id,
+                    move |job| {
+                        Some(Validation {
+                            identity: job,
+                            role: ProviderRole::Tts,
+                            deadline: Deadline::after(
+                                validated_clock.now(),
+                                Duration::from_secs(300),
+                            )
+                            .unwrap(),
+                            source_eligible: true,
+                            speaker_allowed: true,
+                            cloud_tts_allowed: false,
+                        })
+                    },
+                    |scope| {
+                        let (port, _, count) =
+                            native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
+                        drops = Some(count);
+                        Ok(port)
+                    },
+                )
+                .unwrap();
+            Driver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic text".into(), voice())?;
+                coordinator.submit()?;
+                Ok(())
+            })
+            .unwrap();
+            match failure {
+                "borrow" => owner.while_retaining_slot_is_borrowed(|| drop(driver)),
+                "scheduler" => {
+                    scheduler.0.borrow_mut().fail_next = true;
+                    drop(driver);
+                }
+                "deadline" => {
+                    drop(driver);
+                    clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
+                    scheduler.fire();
+                }
+                "poll budget" => {
+                    Driver::turn(&driver, |coordinator| coordinator.stop()).unwrap();
+                    // One native cleanup poll before handoff consumes the shared
+                    // budget. Driver replacement cannot restart the allowance.
+                    scheduler.fire();
+                    drop(driver);
+                    for _ in 1..MAX_STOP_POLLS {
+                        assert!(scheduler.armed());
+                        scheduler.fire();
+                    }
+                }
+                _ => unreachable!(),
+            }
+            assert!(!scheduler.armed(), "{failure}");
+            assert_eq!(drops.unwrap().get(), 1, "{failure}");
+            assert!(
+                !owner.take_report().unwrap().can_abandon_unsubmitted(),
+                "{failure}"
+            );
+            assert!(owner.take_report().is_none());
+            assert_cleanup_owner_busy(&owner);
+        }
+    }
+
+    #[test]
+    fn exact_never_submitted_report_can_abandon_preparation_without_opening_a_flight() {
+        let scheduler = FakeScheduler::default();
+        let clock = Clock::new();
+        let owner = cleanup_owner(clock.clone(), scheduler.clone());
+        let validated_clock = clock.clone();
+        let driver = owner
+            .open_driver(
+                identity(1).interaction_id,
+                move |job| {
+                    Some(Validation {
+                        identity: job,
+                        role: ProviderRole::Tts,
+                        deadline: Deadline::after(validated_clock.now(), Duration::from_secs(300))
+                            .unwrap(),
+                        source_eligible: true,
+                        speaker_allowed: true,
+                        cloud_tts_allowed: false,
+                    })
+                },
+                |scope| {
+                    let (port, _, _) =
+                        native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
+                    Ok(port)
+                },
+            )
+            .unwrap();
+        let result = Driver::turn(&driver, |coordinator| {
+            let missing = VoiceId::new("missing").unwrap();
+            coordinator.admit(identity(1), 1, "Synthetic text".into(), missing)?;
+            coordinator.submit()
+        });
+        assert_eq!(
+            result,
+            Err(Error::Native(native_speech::Error::VoiceUnavailable))
+        );
+        drop(driver);
+        assert!(!scheduler.armed());
+        assert_cleanup_owner_busy(&owner);
+        let report = owner.take_report().unwrap();
+        assert!(report.can_abandon_unsubmitted());
+        assert_eq!(
+            report.facts().submission,
+            native_speech::Submission::NeverSubmitted
+        );
+        let later = owner.open_driver(
+            identity(1).interaction_id,
+            |_| None,
+            |scope| Ok(native_speech::retirement_fixture(scope, clock, voice(), || {}).0),
+        );
+        assert!(later.is_ok());
     }
 }

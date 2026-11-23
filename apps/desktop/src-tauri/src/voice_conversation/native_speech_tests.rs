@@ -39,7 +39,11 @@ struct FakeBackend {
     during_stop: Option<Callback>,
     speak_result: Result<()>,
     stop_result: Result<bool>,
-    detach_result: Result<()>,
+    detach_result: Detach,
+    attach_result: Result<()>,
+    after_attach: Option<Box<dyn FnOnce()>>,
+    captured_inbox: Option<Rc<std::cell::RefCell<Option<Arc<Inbox>>>>>,
+    after_stop: std::cell::RefCell<Option<Box<dyn FnOnce()>>>,
     drops: Rc<Cell<usize>>,
 }
 
@@ -58,7 +62,11 @@ impl FakeBackend {
             during_stop: None,
             speak_result: Ok(()),
             stop_result: Ok(true),
-            detach_result: Ok(()),
+            detach_result: Detach::VerifiedNil,
+            attach_result: Ok(()),
+            after_attach: None,
+            captured_inbox: None,
+            after_stop: Default::default(),
             drops: Rc::new(Cell::new(0)),
         }
     }
@@ -89,11 +97,17 @@ impl Backend for FakeBackend {
 
     fn attach(&mut self, inbox: Arc<Inbox>) -> Result<()> {
         self.calls.borrow_mut().push(Call::Attach);
+        if let Some(captured) = &self.captured_inbox {
+            captured.replace(Some(Arc::clone(&inbox)));
+        }
         assert!(self.inbox.replace(inbox).is_none());
         if let Some(event) = self.during_attach {
             self.emit(event);
         }
-        Ok(())
+        if let Some(action) = self.after_attach.take() {
+            action();
+        }
+        self.attach_result
     }
 
     fn speak(&self, _utterance: &Self::Utterance) -> Result<()> {
@@ -109,10 +123,14 @@ impl Backend for FakeBackend {
         if let Some(event) = self.during_stop {
             self.emit(event);
         }
+        let action = self.after_stop.borrow_mut().take();
+        if let Some(action) = action {
+            action();
+        }
         self.stop_result
     }
 
-    fn detach(&mut self) -> Result<()> {
+    fn detach(&mut self) -> Detach {
         self.calls.borrow_mut().push(Call::Detach);
         self.inbox = None;
         self.detach_result
@@ -139,13 +157,24 @@ fn voice_id() -> VoiceId {
 
 type FakePort = Port<FakeBackend, ManualClock>;
 
+fn scope() -> OutputScope {
+    OutputScope::new(
+        identity(1).app_run_id,
+        Generation::from_native_sequence(1).unwrap(),
+    )
+}
+
+fn binding(port: &FakePort, sequence: u64) -> FlightBinding {
+    port.scope.bind(identity(sequence), sequence)
+}
+
 fn port_with(backend: FakeBackend) -> FakePort {
-    Port::new(Ok(backend), ManualClock::new(), identity(1).app_run_id).unwrap()
+    Port::new(Ok(backend), ManualClock::new(), scope()).unwrap()
 }
 
 fn request(port: &mut FakePort, sequence: u64) -> Result<Notice> {
     port.request(
-        identity(sequence),
+        binding(port, sequence),
         sequence,
         "Synthetic text",
         &voice_id(),
@@ -167,7 +196,7 @@ fn construction_is_inert_and_rejects_an_unavailable_backend() {
     assert!(port.backend.calls.borrow().is_empty());
     for error in [Error::BackendUnavailable, Error::NativeFailure] {
         assert!(matches!(
-            FakePort::new(Err(error), ManualClock::new(), identity(1).app_run_id),
+            FakePort::new(Err(error), ManualClock::new(), scope()),
             Err(received) if received == error
         ));
     }
@@ -255,13 +284,17 @@ fn validated_request_has_one_native_slot_and_phase_one_byte_bounds() {
     let limit = "é".repeat(MAX_SPEECH_JOB_TEXT_BYTES as usize / 2);
     for invalid in ["", " \n", "x\0y"] {
         assert_eq!(
-            port.request(identity(1), 1, invalid, &voice_id(), &admitted),
+            port.request(binding(&port, 1), 1, invalid, &voice_id(), &admitted),
             Err(Error::InvalidText)
         );
+        assert!(port
+            .take_retirement_report()
+            .unwrap()
+            .can_abandon_unsubmitted());
     }
     assert_eq!(
         port.request(
-            identity(1),
+            binding(&port, 1),
             1,
             &(limit.clone() + "é"),
             &voice_id(),
@@ -269,9 +302,13 @@ fn validated_request_has_one_native_slot_and_phase_one_byte_bounds() {
         ),
         Err(Error::Contract(ContractError::LimitExceeded))
     );
+    assert!(port
+        .take_retirement_report()
+        .unwrap()
+        .can_abandon_unsubmitted());
     assert!(port.backend.calls.borrow().is_empty());
     assert_eq!(
-        port.request(identity(1), 1, &limit, &voice_id(), &admitted),
+        port.request(binding(&port, 1), 1, &limit, &voice_id(), &admitted),
         Ok(notice(1, Evidence::Requested))
     );
     assert_eq!(request(&mut port, 2), Err(Error::Busy));
@@ -311,7 +348,10 @@ fn callbacks_require_the_job_generation_synthesizer_and_utterance() {
             inbox.observe(key, event);
         }
     }
-    assert_eq!(port.stop(bad_generation.identity), Err(Error::StaleJob));
+    assert_eq!(
+        port.stop(bad_generation.identity, StopOrigin::User),
+        Err(Error::StaleJob)
+    );
     assert_eq!(port.poll(), None);
 
     inbox.observe(inbox.key, Callback::Start);
@@ -335,6 +375,7 @@ fn callbacks_require_the_job_generation_synthesizer_and_utterance() {
     );
 
     // The fake reuses both native object addresses, like a native allocator can.
+    assert!(port.take_retirement_report().is_some());
     assert_eq!(request(&mut port, 2), Ok(notice(2, Evidence::Requested)));
     inbox.observe(inbox.key, Callback::Start);
     inbox.observe(inbox.key, Callback::Cancel);
@@ -374,11 +415,11 @@ fn stop_drops_buffered_success_and_requires_matching_cancellation() {
     port.backend.emit(Callback::Start);
     port.backend.emit(Callback::Finish);
     let unconfirmed = notice(1, Evidence::CancellationUnconfirmed(StopAttempt::Accepted));
-    assert_eq!(port.stop(identity(1)), Ok(unconfirmed));
+    assert_eq!(port.stop(identity(1), StopOrigin::User), Ok(unconfirmed));
     port.backend.emit(Callback::Start);
     port.backend.emit(Callback::Finish);
     assert_eq!(port.poll(), None);
-    assert_eq!(port.stop(identity(1)), Ok(unconfirmed));
+    assert_eq!(port.stop(identity(1), StopOrigin::User), Ok(unconfirmed));
     assert_eq!(port.backend.drops.get(), 0);
     assert_eq!(request(&mut port, 2), Err(Error::Busy));
     port.backend.emit(Callback::Cancel);
@@ -414,7 +455,7 @@ fn synchronous_cancel_still_arrives_as_separate_evidence() {
     let mut port = port_with(backend);
     request(&mut port, 1).unwrap();
     assert_eq!(
-        port.stop(identity(1)),
+        port.stop(identity(1), StopOrigin::User),
         Ok(notice(
             1,
             Evidence::CancellationUnconfirmed(StopAttempt::Accepted)
@@ -436,7 +477,7 @@ fn unsolicited_cancel_cannot_acknowledge_a_later_stop() {
     let mut port = port_with(FakeBackend::new());
     request(&mut port, 1).unwrap();
     port.backend.emit(Callback::Cancel);
-    port.stop(identity(1)).unwrap();
+    port.stop(identity(1), StopOrigin::User).unwrap();
     assert_eq!(
         port.poll(),
         Some(notice(
@@ -460,9 +501,9 @@ fn failed_native_stop_remains_unconfirmed_without_retry() {
         let mut port = port_with(backend);
         request(&mut port, 1).unwrap();
         let unconfirmed = notice(1, Evidence::CancellationUnconfirmed(attempt));
-        assert_eq!(port.stop(identity(1)), Ok(unconfirmed));
+        assert_eq!(port.stop(identity(1), StopOrigin::User), Ok(unconfirmed));
         assert_eq!(port.poll(), None);
-        assert_eq!(port.stop(identity(1)), Ok(unconfirmed));
+        assert_eq!(port.stop(identity(1), StopOrigin::User), Ok(unconfirmed));
         assert_eq!(request(&mut port, 2), Err(Error::Busy));
         assert_eq!(port.shutdown(), Some(unconfirmed));
         assert_eq!(port.backend.drops.get(), 1);
@@ -488,7 +529,7 @@ fn deadline_is_original_admission_time_and_missing_completion_fails_closed() {
         .advance(SPEECH_OUTPUT_DEADLINE - Duration::from_nanos(1))
         .unwrap();
     assert_eq!(
-        port.request(identity(1), 1, "Test", &voice_id(), &admitted),
+        port.request(binding(&port, 1), 1, "Test", &voice_id(), &admitted),
         Ok(notice(1, Evidence::Requested))
     );
     port.backend.emit(Callback::Start);
@@ -510,12 +551,16 @@ fn expired_or_foreign_admission_never_calls_backend() {
     let admitted = port.clock.now();
     port.clock.advance(SPEECH_OUTPUT_DEADLINE).unwrap();
     assert_eq!(
-        port.request(identity(1), 1, "Test", &voice_id(), &admitted),
+        port.request(binding(&port, 1), 1, "Test", &voice_id(), &admitted),
         Err(Error::Deadline)
     );
+    assert!(port
+        .take_retirement_report()
+        .unwrap()
+        .can_abandon_unsubmitted());
     assert_eq!(
         port.request(
-            identity(1),
+            binding(&port, 1),
             1,
             "Test",
             &voice_id(),
@@ -576,7 +621,7 @@ fn shutdown_detaches_and_makes_outstanding_callbacks_inert() {
 #[test]
 fn delegate_detach_failure_closes_the_port() {
     let mut backend = FakeBackend::new();
-    backend.detach_result = Err(Error::NativeFailure);
+    backend.detach_result = Detach::SetterFailed;
     let mut port = port_with(backend);
     request(&mut port, 1).unwrap();
     port.backend.emit(Callback::Start);
@@ -629,9 +674,283 @@ fn native_entry_points_are_linked_without_calling_avfoundation() {
 
     // Materialize the constructor and the speech-port vtable, including all
     // backend methods, without invoking the constructor or discovery.
-    type Open = fn(MainThreadMarker, ManualClock, AppRunId) -> Result<Box<dyn SpeechOutput>>;
-    let open_port: Open =
-        |marker, clock, run| Ok(Box::new(open(marker, clock, run)?) as Box<dyn SpeechOutput>);
+    type Open = fn(MainThreadMarker, ManualClock, OutputScope) -> Result<Box<dyn RetirementOutput>>;
+    let open_port: Open = |marker, clock, scope| {
+        Ok(Box::new(open(marker, clock, scope)?) as Box<dyn RetirementOutput>)
+    };
     let _ = black_box(open_port);
     let _ = black_box(installed_voices as fn() -> Result<Vec<Voice>>);
+}
+
+#[cfg(target_os = "macos")]
+pub(in crate::voice_conversation) fn retirement_fixture(
+    scope: OutputScope,
+    clock: impl MonotonicClock + 'static,
+    voice: VoiceId,
+    reenter_on_stop: impl FnOnce() + 'static,
+) -> (Box<dyn RetirementOutput>, impl Fn(), Rc<Cell<usize>>) {
+    let inbox = Rc::new(std::cell::RefCell::new(None::<Arc<Inbox>>));
+    let mut backend = FakeBackend::new();
+    backend.selected = Some(voice);
+    backend.captured_inbox = Some(Rc::clone(&inbox));
+    backend.after_stop.replace(Some(Box::new(reenter_on_stop)));
+    let drops = backend.drops.clone();
+    let port = Port::new(Ok(backend), clock, scope).unwrap();
+    let cancel = move || {
+        let inbox = inbox.borrow();
+        let inbox = inbox.as_ref().unwrap();
+        inbox.observe(inbox.key, Callback::Cancel);
+    };
+    (Box::new(port), cancel, drops)
+}
+
+#[test]
+fn retirement_preserves_finish_on_either_side_of_stop_without_using_it_as_stop_ack() {
+    for finish_before_stop in [true, false] {
+        let mut port = port_with(FakeBackend::new());
+        let expected = binding(&port, 1);
+        port.request(
+            expected.clone(),
+            1,
+            "Synthetic",
+            &voice_id(),
+            &port.clock.now(),
+        )
+        .unwrap();
+        port.backend.emit(Callback::Start);
+        if finish_before_stop {
+            port.backend.emit(Callback::Finish);
+        }
+        let unconfirmed = port.begin_retirement().unwrap();
+        if !finish_before_stop {
+            port.backend.emit(Callback::Finish);
+        }
+        assert_eq!(port.poll(), None);
+        assert!(port.take_retirement_report().is_none());
+        assert_eq!(port.shutdown(), Some(unconfirmed));
+        let report = port.take_retirement_report().unwrap();
+        assert!(report.matches(&expected));
+        assert_eq!(report.facts().terminal, Terminal::Finished);
+        assert_eq!(
+            report.facts().first_stop,
+            Some((StopOrigin::Shutdown, StopAttempt::Accepted))
+        );
+        assert_eq!(report.facts().attachment, Attachment::Attached);
+        assert_eq!(report.facts().detach, Detach::VerifiedNil);
+        assert_eq!(report.facts().submission, Submission::PossiblySubmitted);
+        assert_eq!(
+            report.facts().uncertainty,
+            RetirementUncertainty::OutputReleaseUnverified
+        );
+        assert!(!report.can_abandon_unsubmitted());
+        assert!(port.take_retirement_report().is_none());
+    }
+}
+
+#[test]
+fn delayed_cancel_survives_begin_retirement_but_not_native_disposal() {
+    let mut port = port_with(FakeBackend::new());
+    request(&mut port, 1).unwrap();
+    let old = port.backend.inbox.as_ref().unwrap().clone();
+    assert!(port.begin_retirement().is_some());
+    assert_eq!(port.poll(), None);
+    assert_eq!(port.backend.drops.get(), 0);
+    old.observe(old.key, Callback::Finish);
+    assert_eq!(port.poll(), None);
+    old.observe(old.key, Callback::Cancel);
+    old.observe(old.key, Callback::Cancel);
+    assert_eq!(
+        port.poll(),
+        Some(notice(
+            1,
+            Evidence::Cancelled {
+                stop_requested: true
+            }
+        ))
+    );
+    assert_eq!(port.backend.drops.get(), 1);
+    let report = port.take_retirement_report().unwrap();
+    assert_eq!(
+        report.facts().terminal,
+        Terminal::Cancelled {
+            stop_requested: true
+        }
+    );
+    assert!(!report.can_abandon_unsubmitted());
+    old.observe(old.key, Callback::Cancel);
+    assert_eq!(old.take_evidence(), None);
+    assert!(port.take_retirement_report().is_none());
+}
+
+#[test]
+fn first_stop_origin_and_unsolicited_cancellation_are_not_rewritten() {
+    let mut backend = FakeBackend::new();
+    backend.during_speak = Some(Callback::Cancel);
+    backend.speak_result = Err(Error::NativeFailure);
+    let mut port = port_with(backend);
+    assert_eq!(
+        request(&mut port, 1),
+        Ok(notice(1, Evidence::Failure(Error::NativeFailure)))
+    );
+    port.stop(identity(1), StopOrigin::User).unwrap();
+    assert_eq!(
+        port.poll(),
+        Some(notice(
+            1,
+            Evidence::Cancelled {
+                stop_requested: false
+            }
+        ))
+    );
+    let report = port.take_retirement_report().unwrap();
+    assert_eq!(
+        report.facts().terminal,
+        Terminal::Cancelled {
+            stop_requested: false
+        }
+    );
+    assert_eq!(
+        report.facts().first_stop,
+        Some((StopOrigin::SubmissionFailure, StopAttempt::Accepted))
+    );
+    assert_eq!(report.facts().submission, Submission::PossiblySubmitted);
+}
+
+#[test]
+fn a_missing_terminal_remains_unknown_after_detach_and_disposal() {
+    let mut port = port_with(FakeBackend::new());
+    request(&mut port, 1).unwrap();
+    assert!(port.begin_retirement().is_some());
+    port.backend.emit(Callback::Finish);
+    assert_eq!(port.poll(), None);
+    port.shutdown();
+    let report = port.take_retirement_report().unwrap();
+    assert_eq!(report.facts().terminal, Terminal::Unresolved);
+    assert_eq!(report.facts().detach, Detach::VerifiedNil);
+    assert_eq!(port.backend.drops.get(), 1);
+    assert!(!report.can_abandon_unsubmitted());
+}
+
+#[test]
+fn partial_attach_failure_reports_never_submitted_with_independent_detach_disposition() {
+    for disposition in [
+        Detach::VerifiedNil,
+        Detach::SetterFailed,
+        Detach::ReadbackUnknown,
+    ] {
+        let mut backend = FakeBackend::new();
+        backend.attach_result = Err(Error::NativeFailure);
+        backend.detach_result = disposition;
+        let mut port = port_with(backend);
+        assert_eq!(request(&mut port, 1), Err(Error::NativeFailure));
+        let report = port.take_retirement_report().unwrap();
+        assert_eq!(report.facts().attachment, Attachment::MayHaveAttached);
+        assert_eq!(report.facts().submission, Submission::NeverSubmitted);
+        assert_eq!(report.facts().detach, disposition);
+        assert_eq!(
+            report.can_abandon_unsubmitted(),
+            disposition == Detach::VerifiedNil
+        );
+        assert_eq!(port.backend.drops.get(), 1);
+        assert_eq!(
+            *port.backend.calls.borrow(),
+            [Call::Lookup, Call::Prepare, Call::Attach, Call::Detach]
+        );
+    }
+}
+
+#[test]
+fn preparation_expiry_records_attachment_without_any_submission() {
+    #[derive(Clone)]
+    struct Clock(Rc<std::cell::RefCell<ManualClock>>);
+    impl MonotonicClock for Clock {
+        fn now(&self) -> MonotonicTime {
+            self.0.borrow().now()
+        }
+    }
+    let clock = Clock(Rc::new(std::cell::RefCell::new(ManualClock::new())));
+    let admitted = clock.now();
+    let scope = scope();
+    let binding = scope.bind(identity(1), 1);
+    let mut backend = FakeBackend::new();
+    let later = clock.clone();
+    backend.after_attach = Some(Box::new(move || {
+        later
+            .0
+            .borrow_mut()
+            .advance(SPEECH_OUTPUT_DEADLINE)
+            .unwrap();
+    }));
+    let mut port = Port::new(Ok(backend), clock, scope).unwrap();
+    assert_eq!(
+        port.request(binding.clone(), 1, "Synthetic", &voice_id(), &admitted),
+        Err(Error::Deadline)
+    );
+    let report = port.take_retirement_report().unwrap();
+    assert!(report.matches(&binding));
+    assert_eq!(report.facts().attachment, Attachment::Attached);
+    assert_eq!(report.facts().submission, Submission::NeverSubmitted);
+    assert_eq!(report.facts().detach, Detach::VerifiedNil);
+    assert!(!port.backend.calls.borrow().contains(&Call::Speak));
+}
+
+#[test]
+fn terminal_report_keeps_failed_and_unknown_detachment_distinct() {
+    for disposition in [Detach::SetterFailed, Detach::ReadbackUnknown] {
+        let mut backend = FakeBackend::new();
+        backend.detach_result = disposition;
+        let mut port = port_with(backend);
+        request(&mut port, 1).unwrap();
+        port.backend.emit(Callback::Start);
+        port.backend.emit(Callback::Finish);
+        port.poll();
+        assert_eq!(port.poll(), Some(notice(1, Evidence::Finished)));
+        let report = port.take_retirement_report().unwrap();
+        assert_eq!(report.facts().terminal, Terminal::Finished);
+        assert_eq!(report.facts().detach, disposition);
+        assert!(!report.can_abandon_unsubmitted());
+        assert_eq!(request(&mut port, 2), Err(Error::Closed));
+    }
+}
+
+#[test]
+fn retirement_report_requires_exact_authority_epoch_route_identity_operation_and_nonce() {
+    let mut port = port_with(FakeBackend::new());
+    let original = binding(&port, 1);
+    let admitted = port.clock.now();
+    let mut binding = original.clone();
+    binding.scope.authority = Arc::new(());
+    let mut wrong_epoch = original.clone();
+    wrong_epoch.scope = port.scope.next_owner().unwrap();
+    let mut wrong_route = original.clone();
+    wrong_route.scope.route = wrong_route.scope.route.checked_next().unwrap();
+    let mut wrong_operation = original.clone();
+    wrong_operation.operation += 1;
+    let mut wrong_identity = original.clone();
+    wrong_identity.identity.generation = wrong_identity.identity.generation.checked_next().unwrap();
+    let wrong_nonce = port.scope.bind(identity(1), original.operation);
+    for foreign in [&binding, &wrong_epoch, &wrong_route] {
+        assert_eq!(
+            port.request(foreign.clone(), 1, "synthetic", &voice_id(), &admitted),
+            Err(Error::StaleJob)
+        );
+    }
+    assert!(port.backend.calls.borrow().is_empty());
+
+    port.request(original.clone(), 1, "synthetic", &voice_id(), &admitted)
+        .unwrap();
+    port.shutdown();
+    let report = port.take_retirement_report().unwrap();
+    for foreign in [
+        binding,
+        wrong_epoch,
+        wrong_route,
+        wrong_operation,
+        wrong_identity,
+        wrong_nonce,
+    ] {
+        assert!(!report.matches(&foreign));
+    }
+    assert!(report.matches(&original));
+    assert!(port.take_retirement_report().is_none());
 }

@@ -3,8 +3,12 @@
 //! observation can grant authority or initiate the next job.
 use super::{Callback, Event, Job, Preparation, SpeechController, SpeechSlot, Update, Validation};
 use crate::voice_conversation::clock::{Deadline, MonotonicClock, MonotonicTime};
-use crate::voice_conversation::model::{AppRunId, ContractIdentity, InteractionId, SpeechState};
-use crate::voice_conversation::native_speech::{self, Evidence, Notice, SpeechOutput, VoiceId};
+use crate::voice_conversation::model::{
+    AppRunId, ContractIdentity, Generation, InteractionId, SpeechState,
+};
+use crate::voice_conversation::native_speech::{
+    self, Evidence, Notice, OutputScope, SpeechOutput, StopOrigin, VoiceId,
+};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -82,6 +86,7 @@ struct Flight {
 struct Coordinator<P: SpeechOutput, C, A> {
     logical: SpeechController,
     port: P,
+    output_scope: OutputScope,
     clock: C,
     validate: A,
     admissions: [Option<Admission>; 2],
@@ -117,6 +122,7 @@ where
         Ok(Self {
             logical: SpeechController::new(run, interaction, clock.now())?,
             port,
+            output_scope: OutputScope::new(run, Generation::from_native_sequence(1)?),
             clock,
             validate,
             admissions: [None, None],
@@ -191,10 +197,11 @@ where
             .as_ref()
             .ok_or(Error::Protocol)?;
         let binding = job.callback.clone();
+        let native_flight = self.output_scope.bind(binding.identity, binding.operation);
 
         self.cleanup = Cleanup::Unresolved;
         let notice = match self.port.request(
-            binding.identity,
+            native_flight,
             admission.sequence,
             &job.text,
             &admission.voice,
@@ -434,11 +441,20 @@ where
 
     fn fail(&mut self, error: Error) -> Error {
         self.fault.get_or_insert(error);
-        let _ = self.stop();
+        let origin = if error == Error::Deadline {
+            StopOrigin::Deadline
+        } else {
+            StopOrigin::CoordinatorFailure
+        };
+        let _ = self.stop_for(origin);
         error
     }
 
     fn stop(&mut self) -> Result<Option<Notice>> {
+        self.stop_for(StopOrigin::User)
+    }
+
+    fn stop_for(&mut self, origin: StopOrigin) -> Result<Option<Notice>> {
         if self.revoked {
             return Ok(self
                 .flight
@@ -452,7 +468,7 @@ where
         // Drive native Stop even if logical generation or lease retirement failed.
         let native = if let Some(flight) = &mut self.flight {
             let identity = flight.binding.identity;
-            let attempt = match self.port.stop(identity) {
+            let attempt = match self.port.stop(identity, origin) {
                 Ok(notice)
                     if notice.identity == identity
                         && matches!(notice.evidence, Evidence::CancellationUnconfirmed(_)) =>
@@ -523,7 +539,7 @@ where
             return Ok(());
         }
         self.shutdown = true;
-        let result = self.stop();
+        let result = self.stop_for(StopOrigin::Shutdown);
         self.wake = None;
         if let Some(notice) = self.port.shutdown() {
             self.observe_cancellation(notice);
@@ -537,6 +553,9 @@ where
 mod macos {
     use super::*;
     use crate::voice_conversation::clock::NativeMonotonicClock;
+    use crate::voice_conversation::native_speech::{
+        FlightBinding, RetirementOutput, RetirementReport,
+    };
     use core_foundation::base::{kCFAllocatorDefault, TCFType};
     use core_foundation::date::CFAbsoluteTimeGetCurrent;
     use core_foundation::runloop::{
@@ -677,6 +696,7 @@ mod macos {
         fn arm(&self, delay: Duration, action: impl FnOnce() + 'static) -> Result<Self::Armed>;
     }
 
+    #[derive(Clone)]
     struct MainRunLoop(MainThreadMarker);
 
     impl Scheduler for MainRunLoop {
@@ -773,6 +793,7 @@ mod macos {
                     Err(error) => {
                         driver.coordinator.fail(error);
                         driver.coordinator.wake = None;
+                        let _ = driver.coordinator.shutdown();
                         return Err(error);
                     }
                 }
@@ -803,19 +824,434 @@ mod macos {
         }
     }
 
+    struct CleanupBudget {
+        started: MonotonicTime,
+        last: MonotonicTime,
+        polls_left: usize,
+    }
+
+    impl CleanupBudget {
+        fn new(now: MonotonicTime) -> Self {
+            Self {
+                started: now.clone(),
+                last: now,
+                polls_left: MAX_STOP_POLLS,
+            }
+        }
+
+        fn next_delay(&self, now: &MonotonicTime) -> Option<Duration> {
+            now.checked_duration_since(&self.last).ok()?;
+            let elapsed = now.checked_duration_since(&self.started).ok()?;
+            let remaining = (POLL_INTERVAL * MAX_STOP_POLLS as u32).saturating_sub(elapsed);
+            (self.polls_left > 0 && !remaining.is_zero()).then_some(remaining.min(POLL_INTERVAL))
+        }
+
+        fn poll(&mut self, now: MonotonicTime) -> bool {
+            if self.next_delay(&now).is_none() {
+                return false;
+            }
+            self.last = now;
+            self.polls_left -= 1;
+            true
+        }
+    }
+
+    struct Retiring {
+        port: Box<dyn RetirementOutput>,
+        budget: CleanupBudget,
+    }
+
+    /// One owner survives each driver and its scheduler registration. The
+    /// obligation is published before calling the port, then only an exact
+    /// never-submitted report can undo it. A submitted flight stays blocked
+    /// even after all bridge resources and the driver have been dropped.
+    pub(super) struct CleanupOwner<C: MonotonicClock, S: Scheduler> {
+        run: AppRunId,
+        scope: RefCell<OutputScope>,
+        clock: C,
+        scheduler: S,
+        timer: RefCell<Option<S::Armed>>,
+        wake: RefCell<Option<Rc<()>>>,
+        retiring: RefCell<Option<Retiring>>,
+        obligation: RefCell<Option<FlightBinding>>,
+        report: RefCell<Option<RetirementReport>>,
+    }
+
+    impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> CleanupOwner<C, S> {
+        pub(super) fn new(run: AppRunId, route: Generation, clock: C, scheduler: S) -> Rc<Self> {
+            Rc::new(Self {
+                run,
+                scope: RefCell::new(OutputScope::new(run, route)),
+                clock,
+                scheduler,
+                timer: RefCell::new(None),
+                wake: RefCell::new(None),
+                retiring: RefCell::new(None),
+                obligation: RefCell::new(None),
+                report: RefCell::new(None),
+            })
+        }
+
+        pub(super) fn open_driver<A>(
+            self: &Rc<Self>,
+            interaction: InteractionId,
+            validate: A,
+            open_port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
+        ) -> Result<Rc<RefCell<Driver<ManagedOutput<C, S>, C, A, S>>>>
+        where
+            A: Fn(ContractIdentity) -> Option<Validation> + 'static,
+        {
+            // Check before entering the driver constructor and its factory.
+            if self
+                .obligation
+                .try_borrow()
+                .map_err(|_| Error::Busy)?
+                .is_some()
+                || self
+                    .retiring
+                    .try_borrow()
+                    .map_err(|_| Error::Busy)?
+                    .is_some()
+                || self.report.try_borrow().map_err(|_| Error::Busy)?.is_some()
+            {
+                return Err(Error::Busy);
+            }
+            Driver::new(self.scheduler.clone(), || {
+                let scope = {
+                    let mut scope = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
+                    *scope = scope.next_owner().map_err(Error::Native)?;
+                    scope.clone()
+                };
+                let port = open_port(scope.clone())?;
+                let managed = ManagedOutput {
+                    owner: Rc::clone(self),
+                    scope: scope.clone(),
+                    port: Some(port),
+                    budget: None,
+                };
+                let mut coordinator =
+                    Coordinator::new(managed, self.clock.clone(), validate, self.run, interaction)?;
+                coordinator.output_scope = scope;
+                Ok(coordinator)
+            })
+        }
+
+        fn collect(&self, port: &mut dyn RetirementOutput) -> bool {
+            let Some(report) = port.take_retirement_report() else {
+                return false;
+            };
+            let Ok(mut obligation) = self.obligation.try_borrow_mut() else {
+                return false;
+            };
+            if !obligation
+                .as_ref()
+                .is_some_and(|binding| report.matches(binding))
+            {
+                return false;
+            }
+            let Ok(mut slot) = self.report.try_borrow_mut() else {
+                return false;
+            };
+            if slot.is_some() {
+                return false;
+            }
+            if report.can_abandon_unsubmitted() {
+                *obligation = None;
+            }
+            *slot = Some(report);
+            true
+        }
+
+        #[allow(dead_code)] // Future adapter consumes evidence without clearing the barrier.
+        pub(super) fn take_report(&self) -> Option<RetirementReport> {
+            self.report.try_borrow_mut().ok()?.take()
+        }
+
+        #[cfg(test)]
+        pub(super) fn while_retaining_slot_is_borrowed(&self, action: impl FnOnce()) {
+            let _slot = self.retiring.borrow_mut();
+            action();
+        }
+
+        fn finish(&self, mut port: Box<dyn RetirementOutput>) {
+            port.shutdown();
+            self.collect(&mut *port);
+        }
+
+        fn handoff(
+            self: &Rc<Self>,
+            mut port: Box<dyn RetirementOutput>,
+            budget: CleanupBudget,
+        ) -> Option<Notice> {
+            let attempt = port.begin_retirement();
+            if attempt.is_none() || budget.next_delay(&self.clock.now()).is_none() {
+                self.finish(port);
+                return attempt;
+            }
+            // No native calls run while borrowing the retained-port slot. On a
+            // failed handoff, finish the incoming port without touching the
+            // existing port or wake. The prepublished obligation still blocks.
+            let installed = self
+                .retiring
+                .try_borrow_mut()
+                .ok()
+                .filter(|slot| slot.is_none());
+            if let Some(mut slot) = installed {
+                *slot = Some(Retiring { port, budget });
+                drop(slot);
+                self.schedule_retirement();
+            } else {
+                self.finish(port);
+            }
+            attempt
+        }
+
+        fn schedule_retirement(self: &Rc<Self>) {
+            let delay = self
+                .retiring
+                .borrow()
+                .as_ref()
+                .and_then(|retiring| retiring.budget.next_delay(&self.clock.now()));
+            if let Some(delay) = delay {
+                let weak = Rc::downgrade(self);
+                let wake = Rc::new(());
+                *self.wake.borrow_mut() = Some(Rc::clone(&wake));
+                let timer = catch_unwind(AssertUnwindSafe(|| {
+                    self.scheduler.arm(delay, move || {
+                        if let Some(owner) = weak.upgrade() {
+                            owner.poll_retirement(&wake);
+                        }
+                    })
+                }));
+                match timer {
+                    Ok(Ok(timer)) => {
+                        *self.timer.borrow_mut() = Some(timer);
+                        return;
+                    }
+                    Ok(Err(_)) => (),
+                    Err(payload) => std::mem::forget(payload),
+                }
+            }
+            self.wake.borrow_mut().take();
+            let retiring = self.retiring.borrow_mut().take();
+            if let Some(retiring) = retiring {
+                self.finish(retiring.port);
+            }
+        }
+
+        fn poll_retirement(self: &Rc<Self>, wake: &Rc<()>) {
+            {
+                let mut current = self.wake.borrow_mut();
+                if !current
+                    .as_ref()
+                    .is_some_and(|current| Rc::ptr_eq(current, wake))
+                {
+                    return;
+                }
+                current.take();
+            }
+            self.timer.borrow_mut().take();
+            let retiring = self.retiring.borrow_mut().take();
+            let Some(mut retiring) = retiring else { return };
+            if retiring.budget.poll(self.clock.now()) {
+                retiring.port.poll();
+                if self.collect(&mut *retiring.port) {
+                    return;
+                }
+                *self.retiring.borrow_mut() = Some(retiring);
+                self.schedule_retirement();
+            } else {
+                self.finish(retiring.port);
+            }
+        }
+    }
+
+    pub(super) struct ManagedOutput<
+        C: MonotonicClock + Clone + 'static,
+        S: Scheduler + Clone + 'static,
+    > {
+        owner: Rc<CleanupOwner<C, S>>,
+        scope: OutputScope,
+        port: Option<Box<dyn RetirementOutput>>,
+        budget: Option<CleanupBudget>,
+    }
+
+    impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> ManagedOutput<C, S> {
+        fn start_budget(&mut self) {
+            self.budget
+                .get_or_insert_with(|| CleanupBudget::new(self.owner.clock.now()));
+        }
+    }
+
+    impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> SpeechOutput
+        for ManagedOutput<C, S>
+    {
+        fn request(
+            &mut self,
+            binding: FlightBinding,
+            sequence: u64,
+            text: &str,
+            voice: &VoiceId,
+            admitted: &MonotonicTime,
+        ) -> native_speech::Result<Notice> {
+            let port = self.port.as_mut().ok_or(native_speech::Error::Closed)?;
+            if !self.scope.accepts(&binding) {
+                return Err(native_speech::Error::StaleJob);
+            }
+            {
+                let mut obligation = self
+                    .owner
+                    .obligation
+                    .try_borrow_mut()
+                    .map_err(|_| native_speech::Error::Busy)?;
+                if obligation.is_some()
+                    || self
+                        .owner
+                        .report
+                        .try_borrow()
+                        .map_err(|_| native_speech::Error::Busy)?
+                        .is_some()
+                {
+                    return Err(native_speech::Error::Busy);
+                }
+                *obligation = Some(binding.clone());
+            }
+            // Sample before the call in case submission itself requests Stop.
+            let before = self.owner.clock.now();
+            let result = port.request(binding, sequence, text, voice, admitted);
+            if matches!(
+                result,
+                Ok(Notice {
+                    evidence: Evidence::Failure(_),
+                    ..
+                })
+            ) {
+                self.budget = Some(CleanupBudget::new(before));
+            }
+            self.owner.collect(&mut **port);
+            result
+        }
+
+        fn stop(
+            &mut self,
+            identity: ContractIdentity,
+            origin: StopOrigin,
+        ) -> native_speech::Result<Notice> {
+            if !self
+                .owner
+                .obligation
+                .try_borrow()
+                .map_err(|_| native_speech::Error::Busy)?
+                .as_ref()
+                .is_some_and(|binding| binding.identity() == identity)
+            {
+                return Err(native_speech::Error::StaleJob);
+            }
+            self.start_budget();
+            self.port
+                .as_mut()
+                .ok_or(native_speech::Error::Closed)?
+                .stop(identity, origin)
+        }
+
+        fn poll(&mut self) -> Option<Notice> {
+            if let Some(budget) = &mut self.budget {
+                if !budget.poll(self.owner.clock.now()) {
+                    if let Some(port) = self.port.take() {
+                        self.owner.finish(port);
+                    }
+                    return None;
+                }
+            }
+            let before = self.owner.clock.now();
+            let port = self.port.as_mut()?;
+            let notice = port.poll();
+            if matches!(
+                notice,
+                Some(Notice {
+                    evidence: Evidence::Failure(_),
+                    ..
+                })
+            ) && self.budget.is_none()
+            {
+                self.budget = Some(CleanupBudget::new(before));
+            }
+            self.owner.collect(&mut **port);
+            // A final permitted poll must retire here. The coordinator may
+            // exhaust its own scheduling budget without scheduling again.
+            if self
+                .budget
+                .as_ref()
+                .is_some_and(|budget| budget.next_delay(&self.owner.clock.now()).is_none())
+            {
+                if let Some(port) = self.port.take() {
+                    self.owner.finish(port);
+                }
+            }
+            notice
+        }
+
+        fn shutdown(&mut self) -> Option<Notice> {
+            let port = self.port.take()?;
+            let budget = self
+                .budget
+                .take()
+                .unwrap_or_else(|| CleanupBudget::new(self.owner.clock.now()));
+            self.owner.handoff(port, budget)
+        }
+    }
+
+    impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> Drop
+        for ManagedOutput<C, S>
+    {
+        fn drop(&mut self) {
+            // Fallback for a failed construction or unwinding driver teardown.
+            // The obligation was recorded before native submission.
+            if let Some(port) = self.port.take() {
+                self.owner.finish(port);
+            }
+        }
+    }
+
+    thread_local! {
+        // One root per native main thread. A replacement driver cannot create
+        // another root or discard the old obligation. Host wiring is deferred.
+        static NATIVE_OWNER: RefCell<Option<Rc<CleanupOwner<SharedClock, MainRunLoop>>>> =
+            const { RefCell::new(None) };
+    }
+
     fn open<A>(
         main: MainThreadMarker,
         run: AppRunId,
         interaction: InteractionId,
         validate: A,
-    ) -> Result<Rc<RefCell<Driver<impl SpeechOutput, SharedClock, A, MainRunLoop>>>>
+    ) -> Result<
+        Rc<RefCell<Driver<ManagedOutput<SharedClock, MainRunLoop>, SharedClock, A, MainRunLoop>>>,
+    >
     where
         A: Fn(ContractIdentity) -> Option<Validation> + 'static,
     {
-        Driver::new(MainRunLoop(main), || {
-            let clock = SharedClock(Rc::new(NativeMonotonicClock::new()));
-            let port = native_speech::open(main, clock.clone(), run).map_err(Error::Native)?;
-            Coordinator::new(port, clock, validate, run, interaction)
+        let owner = NATIVE_OWNER
+            .try_with(|slot| {
+                let mut slot = slot.try_borrow_mut().map_err(|_| Error::Busy)?;
+                let owner = slot.get_or_insert_with(|| {
+                    CleanupOwner::new(
+                        run,
+                        Generation::from_native_sequence(1).expect("nonzero modeled route"),
+                        SharedClock(Rc::new(NativeMonotonicClock::new())),
+                        MainRunLoop(main),
+                    )
+                });
+                if owner.run != run {
+                    return Err(Error::Closed);
+                }
+                Ok(Rc::clone(owner))
+            })
+            .map_err(|_| Error::Scheduler)??;
+        let clock = owner.clock.clone();
+        owner.open_driver(interaction, validate, |scope| {
+            let port = native_speech::open(main, clock, scope).map_err(Error::Native)?;
+            Ok(Box::new(port))
         })
     }
 
