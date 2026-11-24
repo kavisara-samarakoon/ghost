@@ -2034,3 +2034,75 @@ fn fu02_collision_preserves_existing_release_and_frame_cleanup_identities() {
         f.assert_off();
     }
 }
+
+#[test]
+fn speech_lifecycle_close_keeps_d10_visibility_and_never_acknowledges_output() {
+    for menu_ready in [false, true] {
+        let clock = ManualClock::new();
+        let id = binding();
+        let host = SpeechLifecycleHost::synthetic(
+            id.run,
+            id.host.0,
+            id.os_session.0,
+            id.generation,
+            clock.now(),
+        );
+        assert!(host.apply_speech_event(SpeechLifecycleEvent::PermissionRestored, &clock.now()));
+        assert!(host.admission_available());
+        if menu_ready {
+            host.model.borrow_mut().menu = Menu::Ready;
+        }
+        assert!(host.apply_speech_event(SpeechLifecycleEvent::Close, &clock.now()));
+        assert_eq!(
+            host.model.borrow().window,
+            if menu_ready {
+                Window::Hidden
+            } else {
+                Window::Visible
+            }
+        );
+        assert_eq!(host.model.borrow().application, Application::Running);
+        assert!(host.apply_speech_event(SpeechLifecycleEvent::Quit, &clock.now()));
+        assert_eq!(host.model.borrow().application, Application::ShuttingDown);
+        assert!(host.apply_speech_event(SpeechLifecycleEvent::Terminated, &clock.now()));
+        let model = host.model.borrow();
+        assert_eq!(model.application, Application::TerminationObserved);
+        assert!(!model.shutdown_complete());
+        assert!(!model.cleanup.as_ref().unwrap().acknowledged[Resource::Output as usize]);
+    }
+}
+
+#[test]
+fn speech_lifecycle_recovery_changes_availability_without_authorizing_a_host() {
+    let clock = ManualClock::new();
+    let id = binding();
+    let host = SpeechLifecycleHost::synthetic(
+        id.run,
+        id.host.0,
+        id.os_session.0,
+        id.generation,
+        clock.now(),
+    );
+    host.while_busy(
+        || assert!(!host.apply_speech_event(SpeechLifecycleEvent::Sleep, &clock.now())),
+    );
+    for event in [
+        SpeechLifecycleEvent::PermissionRestored,
+        SpeechLifecycleEvent::Sleep,
+        SpeechLifecycleEvent::Wake,
+        SpeechLifecycleEvent::Lock,
+        SpeechLifecycleEvent::Unlock,
+        SpeechLifecycleEvent::PermissionLost,
+        SpeechLifecycleEvent::PermissionRestored,
+        SpeechLifecycleEvent::Reopen,
+    ] {
+        assert!(host.apply_speech_event(event, &clock.now()));
+    }
+    let model = host.model.borrow();
+    assert!(!model.sleeping);
+    assert!(!model.locked);
+    assert!(model.permission);
+    assert!(model.authorization.is_none());
+    assert!(model.stop_latched);
+    assert!(!model.cleanup_complete());
+}

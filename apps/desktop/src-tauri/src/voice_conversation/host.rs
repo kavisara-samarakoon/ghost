@@ -995,6 +995,152 @@ impl HostModel {
     }
 }
 
+/// Synthetic lifecycle input. Only the scoped coordinator adapter issues
+/// receipts for these events. Availability events never issue speech grants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum SpeechLifecycleEvent {
+    Stop,
+    ConsentLost,
+    ScopeReplaced,
+    RouteChanged,
+    RouteUnknown,
+    ObserverLost,
+    Close,
+    Reopen,
+    Quit,
+    Terminated,
+    Sleep,
+    Wake,
+    Lock,
+    Unlock,
+    Logout,
+    Interrupted,
+    PermissionLost,
+    PermissionRestored,
+}
+
+impl SpeechLifecycleEvent {
+    pub(super) fn revokes(self) -> bool {
+        // This slice has no independent background speech issuer.
+        !matches!(
+            self,
+            Self::Reopen | Self::Wake | Self::Unlock | Self::PermissionRestored
+        )
+    }
+
+    pub(super) fn loses_route(self) -> bool {
+        matches!(
+            self,
+            Self::RouteChanged | Self::RouteUnknown | Self::ObserverLost
+        )
+    }
+
+    pub(super) fn quits(self) -> bool {
+        matches!(self, Self::Quit | Self::Terminated)
+    }
+}
+
+/// One modeled host instance. NativeControl and HostModel remain private.
+/// The adapter can request transitions; it cannot acknowledge resources.
+pub(super) struct SpeechLifecycleHost {
+    model: std::cell::RefCell<HostModel>,
+    control: NativeControl,
+}
+
+impl SpeechLifecycleHost {
+    pub(super) fn synthetic(
+        run: AppRunId,
+        host: NonZeroU64,
+        os_session: NonZeroU64,
+        observer: Generation,
+        now: MonotonicTime,
+    ) -> Self {
+        let model = HostModel::synthetic(
+            Binding {
+                run,
+                host: HostId(host),
+                os_session: OsSessionId(os_session),
+                generation: observer,
+            },
+            now,
+        );
+        let control = model.native_control();
+        Self {
+            model: std::cell::RefCell::new(model),
+            control,
+        }
+    }
+
+    pub(super) fn run(&self) -> AppRunId {
+        self.control.binding.run
+    }
+
+    pub(super) fn admission_available(&self) -> bool {
+        self.model.try_borrow().is_ok_and(|host| {
+            host.privacy_clear()
+                && host.cleanup_complete()
+                && host.window == Window::Visible
+                && host.foreground
+        })
+    }
+
+    /// False means the transition is still pending. Other host errors are
+    /// consumed as a fail-closed modeled host fault, preserving cleanup tickets.
+    pub(super) fn apply_speech_event(
+        &self,
+        event: SpeechLifecycleEvent,
+        now: &MonotonicTime,
+    ) -> bool {
+        let Ok(mut host) = self.model.try_borrow_mut() else {
+            return false;
+        };
+        use SpeechLifecycleEvent as E;
+        let observation = match event {
+            E::Stop | E::Interrupted => {
+                let _ = host.stop_listening(&self.control);
+                return true;
+            }
+            E::Quit => {
+                let _ = host.quit(&self.control);
+                return true;
+            }
+            E::ConsentLost | E::ScopeReplaced => Event::EndConversation,
+            E::RouteChanged | E::RouteUnknown => Event::DeviceLost,
+            E::ObserverLost => Event::MenuLost,
+            E::Close => Event::CloseWindow,
+            E::Reopen => Event::ReopenWindow,
+            E::Terminated => Event::HostTerminated,
+            E::Sleep => Event::Sleep,
+            E::Wake => Event::Wake,
+            E::Lock => Event::Lock,
+            E::Unlock => Event::Unlock,
+            E::Logout => Event::Logout,
+            E::PermissionLost => Event::PermissionLost,
+            E::PermissionRestored => Event::PermissionRestored,
+        };
+        let result = host
+            .synthetic_observation(observation)
+            .and_then(|receipt| host.apply(&receipt, now));
+        if result.is_err() {
+            host.faulted = true;
+            host.error_visible = true;
+            host.revoke();
+        }
+        true
+    }
+
+    #[cfg(test)]
+    pub(super) fn observed_sleeping(&self) -> bool {
+        self.model.borrow().sleeping
+    }
+
+    #[cfg(test)]
+    pub(super) fn while_busy(&self, action: impl FnOnce()) {
+        let _borrow = self.model.borrow_mut();
+        action();
+    }
+}
+
 #[cfg(test)]
 #[path = "host_tests.rs"]
 mod tests;

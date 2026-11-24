@@ -200,7 +200,8 @@ fn notice(sequence: u64, evidence: Evidence) -> Notice {
 impl Fixture {
     fn new() -> Self {
         let clock = Clock::new();
-        let policies: LocalAuthority = Rc::new(RefCell::new(LocalAuthorityFacts {
+        let policies = LocalAuthority::default();
+        policies.replace(LocalAuthorityFacts {
             scope: Some(identity(1)),
             grants: std::array::from_fn(|index| {
                 (index < 4).then(|| LocalSpeechGrant {
@@ -210,7 +211,7 @@ impl Fixture {
                     source: true,
                 })
             }),
-        }));
+        });
         let source = policies.clone();
         let validate: Gate = Box::new(move |job| {
             let index = (1..=4).position(|sequence| identity(sequence) == job)?;
@@ -1337,6 +1338,354 @@ mod native_driver_ownership {
         .unwrap();
         drop(driver);
         assert_eq!(stop.record(), IntentRecording::Stale);
+    }
+
+    use super::super::macos::{LifecycleIngress, LifecycleReceipt, ManagedOutput};
+    use crate::voice_conversation::host::{SpeechLifecycleEvent as Life, SpeechLifecycleHost};
+    use crate::voice_conversation::native_speech::RetirementOutput;
+    use std::num::NonZeroU64;
+
+    type ModeledOwner = CleanupOwner<Clock, FakeScheduler>;
+    type ModeledDriver =
+        DriverHandle<Driver<ManagedOutput<Clock, FakeScheduler>, Clock, Gate, FakeScheduler>>;
+
+    fn lifecycle_owner(
+        clock: &Clock,
+        scheduler: &FakeScheduler,
+    ) -> (Rc<ModeledOwner>, Rc<SpeechLifecycleHost>) {
+        let id = identity(1);
+        let one = NonZeroU64::new(1).unwrap();
+        let host = Rc::new(SpeechLifecycleHost::synthetic(
+            id.app_run_id,
+            one,
+            one,
+            id.generation,
+            clock.now(),
+        ));
+        assert!(host.apply_speech_event(Life::PermissionRestored, &clock.now()));
+        let owner = CleanupOwner::with_host(
+            id.app_run_id,
+            id.generation,
+            clock.clone(),
+            scheduler.clone(),
+            Some(host.clone()),
+        );
+        (owner, host)
+    }
+
+    fn open_modeled(
+        owner: &Rc<ModeledOwner>,
+        clock: &Clock,
+        session: ContractIdentity,
+        authority: LocalAuthority,
+        port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
+    ) -> Result<ModeledDriver> {
+        let clock = clock.clone();
+        let validate: Gate = Box::new(move |identity| {
+            Some(Validation {
+                identity,
+                role: ProviderRole::Tts,
+                deadline: Deadline::after(clock.now(), Duration::from_secs(300)).unwrap(),
+                source_eligible: true,
+                speaker_allowed: true,
+                cloud_tts_allowed: false,
+            })
+        });
+        owner.open_driver(session, validate, authority, port)
+    }
+
+    fn record(ingress: &LifecycleIngress, event: Life) {
+        ingress.record(&ingress.issue(event).unwrap()).unwrap();
+    }
+
+    #[test]
+    fn lifecycle_privacy_during_preparation_denies_dispatch_and_survives_busy_host() {
+        let clock = Clock::new();
+        let scheduler = FakeScheduler::default();
+        let (owner, host) = lifecycle_owner(&clock, &scheduler);
+        let authority = managed_authority(&clock);
+        let ingress = Rc::new(RefCell::new(None::<(LifecycleIngress, LifecycleReceipt)>));
+        let during = ingress.clone();
+        let mut dispatches = None;
+        let driver = open_modeled(&owner, &clock, identity(1), authority.clone(), |scope| {
+            let (port, count) =
+                native_speech::preparation_fixture(scope, clock.clone(), voice(), move || {
+                    let (ingress, receipt) = during.borrow_mut().take().unwrap();
+                    ingress.record(&receipt).unwrap();
+                });
+            dispatches = Some(count);
+            Ok(port)
+        })
+        .unwrap();
+        let control = driver.lifecycle().unwrap();
+        *ingress.borrow_mut() = Some((control.clone(), control.issue(Life::Sleep).unwrap()));
+        host.while_busy(|| {
+            assert_eq!(
+                Driver::turn(&driver, |coordinator| {
+                    coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                    coordinator.submit()
+                }),
+                Err(Error::Native(native_speech::Error::Unauthorized))
+            );
+            assert_eq!(dispatches.unwrap().get(), 0);
+            record(&control, Life::Wake);
+            control.service_host(&clock.now());
+        });
+        control.service_host(&clock.now());
+        assert!(
+            !host.observed_sleeping(),
+            "Wake must follow the retained Sleep"
+        );
+        assert!(authority.borrow().scope.is_none());
+        assert!(!host.admission_available());
+        let report = owner.take_report().unwrap();
+        assert_eq!(report.facts().first_stop, None);
+        assert!(report.can_abandon_unsubmitted());
+        assert!(!scheduler.armed());
+    }
+
+    #[test]
+    fn lifecycle_receipts_reject_foreign_replay_and_stale_replacement_scopes() {
+        let clock = Clock::new();
+        let scheduler = FakeScheduler::default();
+        let (owner, _) = lifecycle_owner(&clock, &scheduler);
+        let (foreign_owner, _) = lifecycle_owner(&clock, &scheduler);
+        let open = |owner: &Rc<ModeledOwner>, session: ContractIdentity, authority| {
+            open_modeled(owner, &clock, session, authority, |scope| {
+                Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+            })
+            .unwrap()
+        };
+        let other_driver = open(&foreign_owner, identity(1), managed_authority(&clock));
+        let foreign = other_driver.lifecycle().unwrap().issue(Life::Stop).unwrap();
+        drop(other_driver);
+        let old_authority = managed_authority(&clock);
+        let driver = open(&owner, identity(1), old_authority.clone());
+        let old = driver.lifecycle().unwrap();
+        assert_eq!(old.record(&foreign), Err(Error::Unauthorized));
+        let pending = old.issue(Life::Reopen).unwrap();
+        let late = old.issue(Life::ConsentLost).unwrap();
+        assert_eq!(old.record(&late), Err(Error::Unauthorized));
+        old.record(&pending).unwrap();
+        assert_eq!(old.record(&pending), Err(Error::Unauthorized));
+        drop(driver);
+        let reused = open_modeled(
+            &foreign_owner,
+            &clock,
+            identity(1),
+            old_authority.clone(),
+            |_| panic!("an already bound grant store must be rejected before the factory"),
+        );
+        assert!(matches!(reused, Err(Error::Unauthorized)));
+
+        let mut next = identity(1);
+        next.session_id = SessionId::from_native_sequence(2).unwrap();
+        next.generation = next.generation.checked_next().unwrap();
+        next.configuration_revision = next.configuration_revision.checked_next().unwrap();
+        let fresh = managed_authority(&clock);
+        fresh.borrow_mut().scope = Some(next);
+        fresh.borrow_mut().grants[0].as_mut().unwrap().identity = next;
+        let successor = open(&owner, next, fresh.clone());
+        assert!(old_authority.borrow().scope.is_none());
+        assert_eq!(old.record(&late), Err(Error::Unauthorized));
+        assert_eq!(
+            successor.lifecycle().unwrap().record(&late),
+            Err(Error::Unauthorized)
+        );
+        assert_eq!(fresh.borrow().scope, Some(next));
+        Driver::turn(&successor, |coordinator| {
+            assert!(!coordinator.revoked);
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn lifecycle_revocations_fail_closed_even_when_authority_borrow_is_busy() {
+        for event in [
+            Life::Stop,
+            Life::ConsentLost,
+            Life::ScopeReplaced,
+            Life::Close,
+            Life::Lock,
+            Life::Logout,
+            Life::Interrupted,
+            Life::PermissionLost,
+        ] {
+            let clock = Clock::new();
+            let (owner, _) = lifecycle_owner(&clock, &FakeScheduler::default());
+            let authority = managed_authority(&clock);
+            let driver = open_modeled(&owner, &clock, identity(1), authority.clone(), |scope| {
+                Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+            })
+            .unwrap();
+            let control = driver.lifecycle().unwrap();
+            let held = authority.borrow_mut();
+            record(&control, event);
+            assert!(held.scope.is_some());
+            Driver::turn(&driver, |coordinator| {
+                assert_eq!(coordinator.submit(), Err(Error::Closed));
+                Ok(())
+            })
+            .unwrap();
+            drop(held);
+            control.service_host(&clock.now());
+            assert!(authority.borrow().scope.is_none());
+        }
+    }
+
+    #[test]
+    fn route_fault_and_quit_never_clear_submitted_output_through_cleanup_failures() {
+        for (event, failure) in [
+            (Life::RouteChanged, "scheduler"),
+            (Life::RouteUnknown, "handoff"),
+            (Life::ObserverLost, "budget"),
+            (Life::Quit, "budget"),
+        ] {
+            let clock = Clock::new();
+            let scheduler = FakeScheduler::default();
+            let (owner, _) = lifecycle_owner(&clock, &scheduler);
+            let driver = open_modeled(
+                &owner,
+                &clock,
+                identity(1),
+                managed_authority(&clock),
+                |scope| {
+                    Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+                },
+            )
+            .unwrap();
+            Driver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                coordinator.submit()?;
+                Ok(())
+            })
+            .unwrap();
+            let control = driver.lifecycle().unwrap();
+            record(&control, event);
+            match failure {
+                "scheduler" => {
+                    scheduler.0.borrow_mut().fail_next = true;
+                    drop(driver);
+                }
+                "handoff" => owner.while_retaining_slot_is_borrowed(|| drop(driver)),
+                _ => {
+                    drop(driver);
+                    clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
+                    scheduler.fire();
+                }
+            }
+            let report = owner.take_report().unwrap();
+            assert_eq!(
+                report.facts().submission,
+                native_speech::Submission::PossiblySubmitted
+            );
+            assert_eq!(
+                report.facts().first_stop,
+                Some((StopOrigin::User, StopAttempt::Accepted))
+            );
+            assert!(!report.can_abandon_unsubmitted());
+            assert!(!scheduler.armed());
+            assert_cleanup_owner_busy(&owner);
+        }
+    }
+
+    #[test]
+    fn quit_during_scheduler_registration_suppresses_the_positive_result() {
+        let clock = Clock::new();
+        let scheduler = FakeScheduler::default();
+        let (owner, _) = lifecycle_owner(&clock, &scheduler);
+        let driver = open_modeled(
+            &owner,
+            &clock,
+            identity(1),
+            managed_authority(&clock),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        )
+        .unwrap();
+        let ingress = driver.lifecycle().unwrap();
+        scheduler.0.borrow_mut().on_arm = Some(Box::new(move || record(&ingress, Life::Quit)));
+        assert_eq!(
+            Driver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                coordinator.submit()
+            }),
+            Err(Error::Closed)
+        );
+        assert!(
+            scheduler.armed(),
+            "retirement now owns the one scheduler slot"
+        );
+        clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
+        scheduler.fire();
+        let report = owner.take_report().unwrap();
+        assert_eq!(
+            report.facts().submission,
+            native_speech::Submission::PossiblySubmitted
+        );
+        assert!(!report.can_abandon_unsubmitted());
+        assert_cleanup_owner_busy(&owner);
+    }
+
+    #[test]
+    fn unresolved_modeled_route_closes_even_idle_admission_before_factory() {
+        let clock = Clock::new();
+        let (owner, host) = lifecycle_owner(&clock, &FakeScheduler::default());
+        let driver = open_modeled(
+            &owner,
+            &clock,
+            identity(1),
+            managed_authority(&clock),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        )
+        .unwrap();
+        let ingress = driver.lifecycle().unwrap();
+        record(&ingress, Life::RouteUnknown);
+        record(&ingress, Life::PermissionRestored);
+        record(&ingress, Life::Reopen);
+        drop(driver);
+        assert!(
+            owner.take_report().is_none(),
+            "an idle route loss had no native flight"
+        );
+        assert!(!host.admission_available());
+        let reopening = open_modeled(
+            &owner,
+            &clock,
+            identity(1),
+            managed_authority(&clock),
+            |_| panic!("unknown route must close admission before the port factory"),
+        );
+        assert!(matches!(reopening, Err(Error::Closed)));
+    }
+
+    #[test]
+    fn full_lifecycle_queue_preserves_order_and_leaves_a_fail_closed_fault() {
+        let clock = Clock::new();
+        let (owner, host) = lifecycle_owner(&clock, &FakeScheduler::default());
+        let driver = open_modeled(
+            &owner,
+            &clock,
+            identity(1),
+            managed_authority(&clock),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        )
+        .unwrap();
+        let ingress = driver.lifecycle().unwrap();
+        for _ in 0..8 {
+            record(&ingress, Life::Reopen);
+        }
+        assert_eq!(
+            ingress.record(&ingress.issue(Life::Quit).unwrap()),
+            Err(Error::Busy)
+        );
+        ingress.service_host(&clock.now());
+        assert!(!host.admission_available());
+        Driver::turn(&driver, |coordinator| {
+            assert!(coordinator.shutdown);
+            Ok(())
+        })
+        .unwrap();
     }
 
     fn managed_authority(clock: &Clock) -> LocalAuthority {

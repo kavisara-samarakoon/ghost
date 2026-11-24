@@ -155,7 +155,22 @@ impl SubmissionStopCheck<'_> {
     }
 }
 
-type LocalAuthority = Rc<LocalAuthorityState>;
+#[derive(Clone, Default)]
+struct LocalAuthority(Rc<AuthorityState>);
+
+#[derive(Default)]
+struct AuthorityState {
+    facts: LocalAuthorityState,
+    lifecycle_bound: Cell<bool>,
+}
+
+impl std::ops::Deref for LocalAuthority {
+    type Target = LocalAuthorityState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0.facts
+    }
+}
 
 struct Admission {
     sequence: u64,
@@ -703,6 +718,7 @@ where
 mod macos {
     use super::*;
     use crate::voice_conversation::clock::NativeMonotonicClock;
+    use crate::voice_conversation::host::{SpeechLifecycleEvent, SpeechLifecycleHost};
     use crate::voice_conversation::native_speech::{RetirementOutput, RetirementReport};
     use core_foundation::base::{kCFAllocatorDefault, TCFType};
     use core_foundation::date::CFAbsoluteTimeGetCurrent;
@@ -862,16 +878,231 @@ mod macos {
         }
     }
 
+    const LIFECYCLE_QUEUE: usize = 8;
+
+    struct LifecycleOwner {
+        host: Rc<SpeechLifecycleHost>,
+        route_known: Cell<bool>,
+        current: RefCell<Option<Rc<LifecycleScope>>>,
+    }
+
+    impl LifecycleOwner {
+        fn bind(
+            self: &Rc<Self>,
+            session: ContractIdentity,
+            authority: &LocalAuthority,
+            latch: &Rc<StopLatch>,
+            now: &MonotonicTime,
+        ) -> Result<LifecycleIngress> {
+            self.service(now);
+            if !self.route_known.get() || !self.host.admission_available() {
+                return Err(Error::Closed);
+            }
+            if session.app_run_id != self.host.run()
+                || !authority
+                    .try_borrow()
+                    .map_err(|_| Error::Busy)?
+                    .scope
+                    .is_some_and(|scope| native_speech::same_session(scope, session))
+            {
+                return Err(Error::Unauthorized);
+            }
+            let mut current = self.current.try_borrow_mut().map_err(|_| Error::Busy)?;
+            if authority.0.lifecycle_bound.get() {
+                return Err(Error::Unauthorized);
+            }
+            if let Some(old) = current.as_ref() {
+                if old.pending() {
+                    return Err(Error::Busy);
+                }
+                // Revoke the old scope before making its controls stale.
+                old.stop.record();
+                old.invalidate()?;
+                old.live.set(false);
+            }
+            // A local grant store belongs to exactly one lifecycle binding,
+            // even across different synthetic host owners.
+            authority.0.lifecycle_bound.set(true);
+            let scope = Rc::new(LifecycleScope {
+                owner: Rc::downgrade(self),
+                stop: EmergencyStop(Rc::downgrade(latch)),
+                authority: authority.clone(),
+                session,
+                live: Cell::new(true),
+                issued: Cell::new(0),
+                applied_sequence: Cell::new(0),
+                queue: Cell::new([None; LIFECYCLE_QUEUE]),
+                fault: Cell::new(false),
+                fault_applied: Cell::new(false),
+                quit: Cell::new(false),
+            });
+            *current = Some(scope.clone());
+            Ok(LifecycleIngress(scope))
+        }
+
+        fn service(&self, now: &MonotonicTime) {
+            // No owner borrow spans a modeled transition.
+            let current = self.current.try_borrow().ok().and_then(|slot| slot.clone());
+            if let Some(current) = current {
+                current.service(self, now);
+            }
+        }
+    }
+
+    struct LifecycleScope {
+        owner: Weak<LifecycleOwner>,
+        stop: EmergencyStop,
+        authority: LocalAuthority,
+        session: ContractIdentity,
+        live: Cell<bool>,
+        issued: Cell<u64>,
+        applied_sequence: Cell<u64>,
+        queue: Cell<[Option<SpeechLifecycleEvent>; LIFECYCLE_QUEUE]>,
+        fault: Cell<bool>,
+        fault_applied: Cell<bool>,
+        quit: Cell<bool>,
+    }
+
+    impl LifecycleScope {
+        fn invalidate(&self) -> Result<()> {
+            let mut state = self.authority.try_borrow_mut().map_err(|_| Error::Busy)?;
+            if state
+                .scope
+                .is_some_and(|scope| native_speech::same_session(scope, self.session))
+            {
+                state.scope = None;
+                state.grants.fill(None);
+            }
+            Ok(())
+        }
+
+        fn fail_ingress(&self, owner: &LifecycleOwner, event: SpeechLifecycleEvent) {
+            self.stop.record();
+            self.fault.set(true);
+            owner.route_known.set(false);
+            if event.quits() {
+                self.quit.set(true);
+            }
+        }
+
+        fn pending(&self) -> bool {
+            self.queue.get()[0].is_some() || (self.fault.get() && !self.fault_applied.get())
+        }
+
+        fn service(&self, owner: &LifecycleOwner, now: &MonotonicTime) {
+            if !self.live.get() {
+                return;
+            }
+            let mut queued = self.queue.get();
+            while let Some(event) = queued[0] {
+                if (event.revokes() && self.invalidate().is_err())
+                    || !owner.host.apply_speech_event(event, now)
+                {
+                    return;
+                }
+                queued.rotate_left(1);
+                queued[LIFECYCLE_QUEUE - 1] = None;
+                self.queue.set(queued);
+            }
+            if self.fault.get() && !self.fault_applied.get() && self.invalidate().is_ok() {
+                let event = if self.quit.get() {
+                    SpeechLifecycleEvent::Quit
+                } else {
+                    SpeechLifecycleEvent::ObserverLost
+                };
+                self.fault_applied
+                    .set(owner.host.apply_speech_event(event, now));
+            }
+        }
+    }
+
+    /// The preissued control holds the exact driver's latch, synthetic host,
+    /// and a private per-binding receipt identity. None is serializable.
+    #[derive(Clone)]
+    pub(super) struct LifecycleIngress(Rc<LifecycleScope>);
+
+    pub(super) struct LifecycleReceipt {
+        scope: Weak<LifecycleScope>,
+        sequence: u64,
+        event: SpeechLifecycleEvent,
+    }
+
+    impl LifecycleIngress {
+        pub(super) fn issue(&self, event: SpeechLifecycleEvent) -> Result<LifecycleReceipt> {
+            if !self.0.live.get() || self.0.owner.upgrade().is_none() || self.0.fault.get() {
+                return Err(Error::Closed);
+            }
+            let Some(sequence) = self.0.issued.get().checked_add(1) else {
+                if let Some(owner) = self.0.owner.upgrade() {
+                    self.0.fail_ingress(&owner, event);
+                }
+                return Err(Error::Closed);
+            };
+            self.0.issued.set(sequence);
+            Ok(LifecycleReceipt {
+                scope: Rc::downgrade(&self.0),
+                sequence,
+                event,
+            })
+        }
+
+        pub(super) fn record(&self, receipt: &LifecycleReceipt) -> Result<()> {
+            let scope = &self.0;
+            let owner = scope.owner.upgrade().ok_or(Error::Closed)?;
+            if !scope.live.get()
+                || !Weak::ptr_eq(&receipt.scope, &Rc::downgrade(scope))
+                || scope.applied_sequence.get().checked_add(1) != Some(receipt.sequence)
+            {
+                return Err(Error::Unauthorized);
+            }
+            if scope.fault.get() {
+                return Err(Error::Closed);
+            }
+            if receipt.event.revokes() {
+                scope.stop.record();
+                let _ = scope.invalidate(); // retained event retries a busy authority
+            }
+            if receipt.event.loses_route() {
+                owner.route_known.set(false);
+            }
+            if receipt.event.quits() {
+                scope.quit.set(true);
+            }
+            let mut queued = scope.queue.get();
+            let Some(slot) = queued.iter_mut().find(|slot| slot.is_none()) else {
+                // Existing accepted transitions retain their FIFO order. The
+                // rejected event closes the scope, with sticky Quit if needed.
+                scope.fail_ingress(&owner, receipt.event);
+                return Err(Error::Busy);
+            };
+            *slot = Some(receipt.event);
+            scope.applied_sequence.set(receipt.sequence);
+            scope.queue.set(queued);
+            Ok(())
+        }
+
+        pub(super) fn service_host(&self, now: &MonotonicTime) {
+            if let Some(owner) = self.0.owner.upgrade() {
+                self.0.service(&owner, now);
+            }
+        }
+    }
+
     // All borrows of the inner driver are controlled here. A busy timer
     // callback therefore runs inside a turn with a guaranteed Stop checkpoint.
     pub(super) struct DriverHandle<D> {
         driver: Rc<RefCell<D>>,
         emergency: Option<EmergencyStop>,
+        lifecycle: Option<LifecycleIngress>,
     }
 
     impl<D> DriverHandle<D> {
         pub(super) fn emergency_stop(&self) -> Option<EmergencyStop> {
             self.emergency.clone()
+        }
+
+        pub(super) fn lifecycle(&self) -> Option<LifecycleIngress> {
+            self.lifecycle.clone()
         }
     }
 
@@ -887,6 +1118,7 @@ mod macos {
         // Field destruction follows declaration order. Keep the reservation
         // through timer invalidation, shutdown and actual port destruction.
         _reservation: DriverReservation,
+        lifecycle: Option<LifecycleIngress>,
     }
 
     impl<P, C, A, S> Driver<P, C, A, S>
@@ -900,21 +1132,30 @@ mod macos {
             scheduler: S,
             build: impl FnOnce() -> Result<Coordinator<P, C, A>>,
         ) -> Result<DriverHandle<Self>> {
+            Self::new_bound(|| Ok((build()?, None)), scheduler)
+        }
+
+        fn new_bound(
+            build: impl FnOnce() -> Result<(Coordinator<P, C, A>, Option<LifecycleIngress>)>,
+            scheduler: S,
+        ) -> Result<DriverHandle<Self>> {
             // Acquire before running any constructor that can open the port
             // or reenter on this thread. Failure drops the local reservation.
             let reservation = DriverReservation::acquire()?;
-            let coordinator = build()?;
+            let (coordinator, lifecycle) = build()?;
             let emergency = coordinator
                 .emergency
                 .as_ref()
                 .map(|latch| EmergencyStop(Rc::downgrade(latch)));
             Ok(DriverHandle {
                 emergency,
+                lifecycle: lifecycle.clone(),
                 driver: Rc::new(RefCell::new(Self {
                     coordinator,
                     timer: None,
                     scheduler,
                     _reservation: reservation,
+                    lifecycle,
                 })),
             })
         }
@@ -933,6 +1174,7 @@ mod macos {
             let mut driver = owner.try_borrow_mut().map_err(|_| Error::Scheduler)?;
             // No timer remains registered across a native call or an owner turn.
             driver.timer = None;
+            driver.service_lifecycle();
             driver.coordinator.service_emergency();
             let result = match catch_unwind(AssertUnwindSafe(|| action(&mut driver.coordinator))) {
                 Ok(result) => result,
@@ -945,22 +1187,40 @@ mod macos {
                     Err(error)
                 }
             };
-            let drained = driver.coordinator.service_emergency();
+            let drained = driver.service_lifecycle() | driver.coordinator.service_emergency();
             let consumed = Self::rearm(owner, &mut driver)?;
             // Clock/scheduler hooks can reenter while the driver is borrowed.
             // A consumed one-shot from that turn is replaced by the Stop wake.
-            let mut during_arm = driver.coordinator.service_emergency();
+            let mut during_arm =
+                driver.service_lifecycle() | driver.coordinator.service_emergency();
             if during_arm || consumed {
                 driver.timer = None;
                 if Self::rearm(owner, &mut driver)? {
                     return Err(Self::scheduler_failed(&mut driver, Error::Scheduler));
                 }
-                during_arm |= driver.coordinator.service_emergency();
+                during_arm |= driver.service_lifecycle() | driver.coordinator.service_emergency();
             }
             if drained || during_arm {
                 return result.and(Err(Error::Closed));
             }
             result
+        }
+
+        fn service_lifecycle(&mut self) -> bool {
+            let Some(lifecycle) = &self.lifecycle else {
+                return false;
+            };
+            let was_revoked = self.coordinator.revoked;
+            if lifecycle.0.pending() {
+                lifecycle.service_host(&self.coordinator.clock.now());
+            }
+            if lifecycle.0.quit.get() {
+                // This can run after successful ordinary timer registration.
+                // Remove that timer before shutdown hands the slot to retirement.
+                self.timer = None;
+                let _ = self.coordinator.shutdown();
+            }
+            !was_revoked && self.coordinator.revoked
         }
 
         fn rearm(owner: &Rc<RefCell<Self>>, driver: &mut Self) -> Result<bool> {
@@ -1001,9 +1261,11 @@ mod macos {
 
         fn scheduler_failed(driver: &mut Self, error: Error) -> Error {
             driver.timer = None;
+            driver.service_lifecycle();
             driver.coordinator.fail(error);
             driver.coordinator.wake = None;
             let _ = driver.coordinator.shutdown();
+            driver.service_lifecycle();
             error
         }
 
@@ -1028,7 +1290,13 @@ mod macos {
     {
         fn drop(&mut self) {
             self.timer = None;
+            if let Some(lifecycle) = &self.lifecycle {
+                lifecycle.service_host(&self.coordinator.clock.now());
+            }
             let _ = self.coordinator.shutdown();
+            if let Some(lifecycle) = &self.lifecycle {
+                lifecycle.service_host(&self.coordinator.clock.now());
+            }
         }
     }
 
@@ -1084,11 +1352,29 @@ mod macos {
         retiring: RefCell<Option<Retiring>>,
         obligation: RefCell<Option<FlightBinding>>,
         report: RefCell<Option<RetirementReport>>,
+        lifecycle: Option<Rc<LifecycleOwner>>,
     }
 
     impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> CleanupOwner<C, S> {
         pub(super) fn new(run: AppRunId, route: Generation, clock: C, scheduler: S) -> Rc<Self> {
+            Self::with_host(run, route, clock, scheduler, None)
+        }
+
+        pub(super) fn with_host(
+            run: AppRunId,
+            route: Generation,
+            clock: C,
+            scheduler: S,
+            host: Option<Rc<SpeechLifecycleHost>>,
+        ) -> Rc<Self> {
             Rc::new(Self {
+                lifecycle: host.map(|host| {
+                    Rc::new(LifecycleOwner {
+                        host,
+                        route_known: Cell::new(true),
+                        current: RefCell::new(None),
+                    })
+                }),
                 run,
                 scope: RefCell::new(OutputScope::new(run, route)),
                 clock,
@@ -1111,7 +1397,7 @@ mod macos {
         where
             A: Fn(ContractIdentity) -> Option<Validation> + 'static,
         {
-            if session.app_run_id != self.run {
+            if session.app_run_id != self.run || authority.0.lifecycle_bound.get() {
                 return Err(Error::Unauthorized);
             }
             // Check before entering the driver constructor and its factory.
@@ -1129,33 +1415,51 @@ mod macos {
             {
                 return Err(Error::Busy);
             }
-            Driver::new(self.scheduler.clone(), || {
-                let scope = {
-                    let mut scope = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
-                    *scope = scope.next_owner().map_err(Error::Native)?;
-                    scope.clone()
-                };
-                let emergency = Rc::new(StopLatch::new(scope.clone(), session));
-                let port = open_port(scope.clone())?;
-                let managed = ManagedOutput {
-                    owner: Rc::clone(self),
-                    scope: scope.clone(),
-                    port: Some(port),
-                    budget: None,
-                    emergency: Rc::clone(&emergency),
-                };
-                let mut coordinator = Coordinator::new(
-                    managed,
-                    self.clock.clone(),
-                    validate,
-                    authority,
-                    self.run,
-                    session.interaction_id,
-                )?;
-                coordinator.emergency = Some(emergency);
-                coordinator.output_scope = scope;
-                Ok(coordinator)
-            })
+            Driver::new_bound(
+                || {
+                    let scope = {
+                        let mut scope = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
+                        *scope = scope.next_owner().map_err(Error::Native)?;
+                        scope.clone()
+                    };
+                    let emergency = Rc::new(StopLatch::new(scope.clone(), session));
+                    let lifecycle = self
+                        .lifecycle
+                        .as_ref()
+                        .map(|owner| owner.bind(session, &authority, &emergency, &self.clock.now()))
+                        .transpose()?;
+                    let port = match open_port(scope.clone()) {
+                        Ok(port) => port,
+                        Err(error) => {
+                            if let Some(lifecycle) = lifecycle {
+                                lifecycle.0.stop.record();
+                                let _ = lifecycle.0.invalidate();
+                                lifecycle.0.live.set(false);
+                            }
+                            return Err(error);
+                        }
+                    };
+                    let managed = ManagedOutput {
+                        owner: Rc::clone(self),
+                        scope: scope.clone(),
+                        port: Some(port),
+                        budget: None,
+                        emergency: Rc::clone(&emergency),
+                    };
+                    let mut coordinator = Coordinator::new(
+                        managed,
+                        self.clock.clone(),
+                        validate,
+                        authority,
+                        self.run,
+                        session.interaction_id,
+                    )?;
+                    coordinator.emergency = Some(emergency);
+                    coordinator.output_scope = scope;
+                    Ok((coordinator, lifecycle))
+                },
+                self.scheduler.clone(),
+            )
         }
 
         fn collect(&self, port: &mut dyn RetirementOutput) -> bool {
@@ -1277,6 +1581,9 @@ mod macos {
                 self.finish(retiring.port);
                 retiring.emergency.service();
             }
+            if let Some(lifecycle) = &self.lifecycle {
+                lifecycle.service(&self.clock.now());
+            }
         }
 
         fn poll_retirement(self: &Rc<Self>, wake: &Rc<()>) {
@@ -1293,6 +1600,9 @@ mod macos {
             self.timer.borrow_mut().take();
             let retiring = self.retiring.borrow_mut().take();
             let Some(mut retiring) = retiring else { return };
+            if let Some(lifecycle) = &self.lifecycle {
+                lifecycle.service(&self.clock.now());
+            }
             retiring.emergency.service();
             if retiring.budget.poll(self.clock.now()) {
                 retiring.port.poll();
