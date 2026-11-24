@@ -718,8 +718,13 @@ where
 mod macos {
     use super::*;
     use crate::voice_conversation::clock::NativeMonotonicClock;
-    use crate::voice_conversation::host::{SpeechLifecycleEvent, SpeechLifecycleHost};
-    use crate::voice_conversation::native_speech::{RetirementOutput, RetirementReport};
+    use crate::voice_conversation::host::{
+        self, CleanupTicket, OutputAckAuthority, SpeechLifecycleEvent, SpeechLifecycleHost,
+    };
+    use crate::voice_conversation::native_speech::{
+        Detach, ResourceRetirement, RetirementFacts, RetirementOutput, RetirementReport,
+        RetirementUncertainty, Submission, Terminal,
+    };
     use core_foundation::base::{kCFAllocatorDefault, TCFType};
     use core_foundation::date::CFAbsoluteTimeGetCurrent;
     use core_foundation::runloop::{
@@ -935,6 +940,8 @@ mod macos {
                 fault: Cell::new(false),
                 fault_applied: Cell::new(false),
                 quit: Cell::new(false),
+                revoked: Cell::new(false),
+                cleanup_ticket: std::cell::OnceCell::new(),
             });
             *current = Some(scope.clone());
             Ok(LifecycleIngress(scope))
@@ -961,6 +968,8 @@ mod macos {
         fault: Cell<bool>,
         fault_applied: Cell<bool>,
         quit: Cell<bool>,
+        revoked: Cell<bool>,
+        cleanup_ticket: std::cell::OnceCell<CleanupTicket>,
     }
 
     impl LifecycleScope {
@@ -976,8 +985,13 @@ mod macos {
             Ok(())
         }
 
-        fn fail_ingress(&self, owner: &LifecycleOwner, event: SpeechLifecycleEvent) {
+        fn revoke(&self) {
             self.stop.record();
+            self.revoked.set(true);
+        }
+
+        fn fail_ingress(&self, owner: &LifecycleOwner, event: SpeechLifecycleEvent) {
+            self.revoke();
             self.fault.set(true);
             owner.route_known.set(false);
             if event.quits() {
@@ -987,6 +1001,12 @@ mod macos {
 
         fn pending(&self) -> bool {
             self.queue.get()[0].is_some() || (self.fault.get() && !self.fault_applied.get())
+        }
+
+        fn bind_cleanup_ticket(&self, owner: &LifecycleOwner) {
+            if let Ok(Some(ticket)) = owner.host.output_cleanup_ticket() {
+                let _ = self.cleanup_ticket.set(ticket);
+            }
         }
 
         fn service(&self, owner: &LifecycleOwner, now: &MonotonicTime) {
@@ -1000,6 +1020,9 @@ mod macos {
                 {
                     return;
                 }
+                if event.revokes() {
+                    self.bind_cleanup_ticket(owner);
+                }
                 queued.rotate_left(1);
                 queued[LIFECYCLE_QUEUE - 1] = None;
                 self.queue.set(queued);
@@ -1010,8 +1033,10 @@ mod macos {
                 } else {
                     SpeechLifecycleEvent::ObserverLost
                 };
-                self.fault_applied
-                    .set(owner.host.apply_speech_event(event, now));
+                if owner.host.apply_speech_event(event, now) {
+                    self.bind_cleanup_ticket(owner);
+                    self.fault_applied.set(true);
+                }
             }
         }
     }
@@ -1059,7 +1084,7 @@ mod macos {
                 return Err(Error::Closed);
             }
             if receipt.event.revokes() {
-                scope.stop.record();
+                scope.revoke();
                 let _ = scope.invalidate(); // retained event retries a busy authority
             }
             if receipt.event.loses_route() {
@@ -1332,8 +1357,106 @@ mod macos {
         }
     }
 
-    struct Retiring {
+    /// Lives from before the factory through destruction of the actual port.
+    /// Temporarily removing a port from a slot cannot make it look absent.
+    struct PortLease(Rc<Cell<bool>>);
+
+    impl Drop for PortLease {
+        fn drop(&mut self) {
+            self.0.set(false);
+        }
+    }
+
+    struct OwnedPort {
         port: Box<dyn RetirementOutput>,
+        _lease: PortLease,
+    }
+
+    impl std::ops::Deref for OwnedPort {
+        type Target = dyn RetirementOutput;
+
+        fn deref(&self) -> &Self::Target {
+            &*self.port
+        }
+    }
+
+    impl std::ops::DerefMut for OwnedPort {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            &mut *self.port
+        }
+    }
+
+    /// Independently provisioned by the modeled fixture at owner setup.
+    /// Resolution never accepts a caller-supplied issuer or raw observation.
+    #[derive(Clone, Default)]
+    pub(super) struct ModeledReleaseIssuer(Rc<()>);
+
+    #[derive(Clone, Copy)]
+    pub(super) enum ModeledReleaseAssertion {
+        Released,
+        Unknown,
+    }
+
+    #[derive(Clone)]
+    pub(super) struct ReleaseChallenge {
+        pub(super) flight: FlightBinding,
+        pub(super) ticket: CleanupTicket,
+    }
+
+    pub(super) struct ModeledReleaseEvidence {
+        issuer: Rc<()>,
+        challenge: ReleaseChallenge,
+        consumed: Cell<bool>,
+    }
+
+    #[cfg(test)]
+    impl ModeledReleaseEvidence {
+        pub(super) fn was_consumed(&self) -> bool {
+            self.consumed.get()
+        }
+    }
+
+    impl ModeledReleaseIssuer {
+        pub(super) fn issue(
+            &self,
+            assertion: ModeledReleaseAssertion,
+            challenge: ReleaseChallenge,
+        ) -> Option<ModeledReleaseEvidence> {
+            match assertion {
+                ModeledReleaseAssertion::Released => Some(ModeledReleaseEvidence {
+                    issuer: self.0.clone(),
+                    challenge,
+                    consumed: Cell::new(false),
+                }),
+                ModeledReleaseAssertion::Unknown => None,
+            }
+        }
+    }
+
+    struct ReleaseAuthority {
+        issuer: ModeledReleaseIssuer,
+        host: OutputAckAuthority,
+    }
+
+    struct StoredRetirement {
+        flight: FlightBinding,
+        report: RetirementReport,
+    }
+
+    pub(super) struct ReportAccounting(RetirementFacts);
+
+    impl ReportAccounting {
+        pub(super) fn facts(&self) -> RetirementFacts {
+            self.0
+        }
+
+        pub(super) fn can_abandon_unsubmitted(&self) -> bool {
+            self.0.uncertainty == RetirementUncertainty::NoSubmissionOrDelegate
+        }
+    }
+
+    struct Retiring {
+        port: OwnedPort,
         budget: CleanupBudget,
         emergency: Rc<StopLatch>,
     }
@@ -1351,8 +1474,12 @@ mod macos {
         wake: RefCell<Option<Rc<()>>>,
         retiring: RefCell<Option<Retiring>>,
         obligation: RefCell<Option<FlightBinding>>,
-        report: RefCell<Option<RetirementReport>>,
+        report: RefCell<Option<StoredRetirement>>,
+        accounting: Cell<Option<RetirementFacts>>,
+        port_live: Rc<Cell<bool>>,
+        attempted: Cell<bool>,
         lifecycle: Option<Rc<LifecycleOwner>>,
+        release_authority: Option<ReleaseAuthority>,
     }
 
     impl<C: MonotonicClock + Clone + 'static, S: Scheduler + Clone + 'static> CleanupOwner<C, S> {
@@ -1366,6 +1493,38 @@ mod macos {
             clock: C,
             scheduler: S,
             host: Option<Rc<SpeechLifecycleHost>>,
+        ) -> Rc<Self> {
+            Self::build(run, route, clock, scheduler, host, None)
+        }
+
+        pub(super) fn with_release_issuer(
+            run: AppRunId,
+            route: Generation,
+            clock: C,
+            scheduler: S,
+            host: (Rc<SpeechLifecycleHost>, OutputAckAuthority),
+            issuer: ModeledReleaseIssuer,
+        ) -> Rc<Self> {
+            Self::build(
+                run,
+                route,
+                clock,
+                scheduler,
+                Some(host.0),
+                Some(ReleaseAuthority {
+                    issuer,
+                    host: host.1,
+                }),
+            )
+        }
+
+        fn build(
+            run: AppRunId,
+            route: Generation,
+            clock: C,
+            scheduler: S,
+            host: Option<Rc<SpeechLifecycleHost>>,
+            release_authority: Option<ReleaseAuthority>,
         ) -> Rc<Self> {
             Rc::new(Self {
                 lifecycle: host.map(|host| {
@@ -1384,6 +1543,10 @@ mod macos {
                 retiring: RefCell::new(None),
                 obligation: RefCell::new(None),
                 report: RefCell::new(None),
+                accounting: Cell::new(None),
+                port_live: Rc::new(Cell::new(false)),
+                attempted: Cell::new(false),
+                release_authority,
             })
         }
 
@@ -1401,11 +1564,13 @@ mod macos {
                 return Err(Error::Unauthorized);
             }
             // Check before entering the driver constructor and its factory.
-            if self
-                .obligation
-                .try_borrow()
-                .map_err(|_| Error::Busy)?
-                .is_some()
+            if self.port_live.get()
+                || self.accounting.get().is_some()
+                || self
+                    .obligation
+                    .try_borrow()
+                    .map_err(|_| Error::Busy)?
+                    .is_some()
                 || self
                     .retiring
                     .try_borrow()
@@ -1417,6 +1582,8 @@ mod macos {
             }
             Driver::new_bound(
                 || {
+                    self.port_live.set(true);
+                    let lease = PortLease(self.port_live.clone());
                     let scope = {
                         let mut scope = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
                         *scope = scope.next_owner().map_err(Error::Native)?;
@@ -1439,10 +1606,14 @@ mod macos {
                             return Err(error);
                         }
                     };
+                    self.attempted.set(false);
                     let managed = ManagedOutput {
                         owner: Rc::clone(self),
                         scope: scope.clone(),
-                        port: Some(port),
+                        port: Some(OwnedPort {
+                            port,
+                            _lease: lease,
+                        }),
                         budget: None,
                         emergency: Rc::clone(&emergency),
                     };
@@ -1463,34 +1634,167 @@ mod macos {
         }
 
         fn collect(&self, port: &mut dyn RetirementOutput) -> bool {
-            let Some(report) = port.take_retirement_report() else {
-                return false;
-            };
             let Ok(mut obligation) = self.obligation.try_borrow_mut() else {
                 return false;
             };
-            if !obligation
-                .as_ref()
-                .is_some_and(|binding| report.matches(binding))
-            {
-                return false;
-            }
             let Ok(mut slot) = self.report.try_borrow_mut() else {
                 return false;
             };
-            if slot.is_some() {
+            if slot.is_some() || self.accounting.get().is_some() {
                 return false;
             }
+            let Some(flight) = obligation.as_ref() else {
+                return false;
+            };
+            let Some(report) = port.take_retirement_report() else {
+                return false;
+            };
+            if !report.matches(flight) {
+                return false;
+            }
+            let flight = flight.clone();
             if report.can_abandon_unsubmitted() {
                 *obligation = None;
             }
-            *slot = Some(report);
+            self.accounting.set(Some(report.facts()));
+            *slot = Some(StoredRetirement { flight, report });
             true
         }
 
-        #[allow(dead_code)] // Future adapter consumes evidence without clearing the barrier.
-        pub(super) fn take_report(&self) -> Option<RetirementReport> {
-            self.report.try_borrow_mut().ok()?.take()
+        /// Diagnostic accounting remains take-once. A registered resolver
+        /// retains the sole authoritative report until coordinated resolution.
+        pub(super) fn take_report(&self) -> Option<ReportAccounting> {
+            let mut report = self.report.try_borrow_mut().ok()?;
+            let facts = self.accounting.take()?;
+            if self.release_authority.is_none() {
+                report.take();
+            }
+            Some(ReportAccounting(facts))
+        }
+
+        pub(super) fn release_challenge(&self) -> Result<ReleaseChallenge> {
+            let lifecycle = self.lifecycle.as_ref().ok_or(Error::Unauthorized)?;
+            let current = lifecycle.current.try_borrow().map_err(|_| Error::Busy)?;
+            let ticket = current
+                .as_ref()
+                .and_then(|scope| scope.cleanup_ticket.get())
+                .ok_or(Error::Unauthorized)?
+                .clone();
+            let slot = self.obligation.try_borrow().map_err(|_| Error::Busy)?;
+            let flight = slot.as_ref().ok_or(Error::Unauthorized)?.clone();
+            Ok(ReleaseChallenge { flight, ticket })
+        }
+
+        fn host_error(error: host::Error) -> Error {
+            if error == host::Error::Busy {
+                Error::Busy
+            } else {
+                Error::Unauthorized
+            }
+        }
+
+        pub(super) fn resolve_output(
+            &self,
+            ticket: &CleanupTicket,
+            evidence: Option<&ModeledReleaseEvidence>,
+        ) -> Result<()> {
+            let authority = self.release_authority.as_ref().ok_or(Error::Unauthorized)?;
+            let lifecycle = self.lifecycle.as_ref().ok_or(Error::Unauthorized)?;
+            let current = lifecycle.current.try_borrow().map_err(|_| Error::Busy)?;
+            let scope = current
+                .as_ref()
+                .filter(|scope| scope.live.get() && scope.revoked.get())
+                .ok_or(Error::Unauthorized)?;
+
+            // The lifetime witness covers construction, handoff, polling,
+            // and resource destruction even if all storage slots look empty.
+            let retiring = self.retiring.try_borrow_mut().map_err(|_| Error::Busy)?;
+            if self.port_live.get() || retiring.is_some() || scope.pending() {
+                return Err(Error::Busy);
+            }
+            if !scope
+                .cleanup_ticket
+                .get()
+                .is_some_and(|bound| bound.matches(ticket))
+            {
+                return Err(Error::Unauthorized);
+            }
+            let output = self.scope.try_borrow().map_err(|_| Error::Busy)?;
+            let mut obligation = self.obligation.try_borrow_mut().map_err(|_| Error::Busy)?;
+            let mut report = self.report.try_borrow_mut().map_err(|_| Error::Busy)?;
+            let host = lifecycle
+                .host
+                .prepare_output_ack(&authority.host, ticket)
+                .map_err(Self::host_error)?;
+
+            match (obligation.as_ref(), report.as_ref(), evidence) {
+                (None, None, None) if !self.attempted.get() => (),
+                (None, Some(stored), None)
+                    if stored.report.can_abandon_unsubmitted()
+                        && output.accepts(&stored.flight)
+                        && native_speech::same_session(scope.session, stored.flight.identity()) =>
+                {
+                    ()
+                }
+                (Some(flight), Some(stored), Some(evidence))
+                    if output.accepts(flight)
+                        && native_speech::same_session(scope.session, flight.identity())
+                        && stored.report.matches(flight)
+                        && !evidence.consumed.get()
+                        && Rc::ptr_eq(&authority.issuer.0, &evidence.issuer)
+                        && evidence.challenge.flight.matches(flight)
+                        && evidence.challenge.ticket.matches(ticket)
+                        && Self::confirmed_retirement(stored.report.facts()) =>
+                {
+                    ()
+                }
+                _ => return Err(Error::Unauthorized),
+            }
+
+            // All guards and validation precede this commit. These operations
+            // perform no callbacks and cannot fail.
+            if let Some(evidence) = evidence {
+                evidence.consumed.set(true);
+            }
+            *obligation = None;
+            *report = None;
+            host.commit();
+            Ok(())
+        }
+
+        pub(super) fn confirmed_retirement(facts: RetirementFacts) -> bool {
+            facts.submission == Submission::PossiblySubmitted
+                && facts.uncertainty == RetirementUncertainty::OutputReleaseUnverified
+                && facts.detach == Detach::VerifiedNil
+                && facts.resources == ResourceRetirement::OwnedFlightRelinquished
+                && match facts.terminal {
+                    // Native facts cannot establish whether a Finish buffered
+                    // around Stop preceded it. Fail closed in that case.
+                    Terminal::Finished => facts.first_stop.is_none(),
+                    Terminal::Cancelled {
+                        stop_requested: true,
+                    } => facts.first_stop.is_some(),
+                    Terminal::Cancelled {
+                        stop_requested: false,
+                    } => true,
+                    Terminal::Unresolved => false,
+                }
+        }
+
+        #[cfg(test)]
+        pub(super) fn while_release_slot_busy(&self, report: bool, action: impl FnOnce()) {
+            if report {
+                let _held = self.report.borrow_mut();
+                action();
+            } else {
+                let _held = self.obligation.borrow_mut();
+                action();
+            }
+        }
+
+        #[cfg(test)]
+        pub(super) fn modeled_scope(&self) -> OutputScope {
+            self.scope.borrow().clone()
         }
 
         #[cfg(test)]
@@ -1499,14 +1803,14 @@ mod macos {
             action();
         }
 
-        fn finish(&self, mut port: Box<dyn RetirementOutput>) {
+        fn finish(&self, mut port: OwnedPort) {
             port.shutdown();
             self.collect(&mut *port);
         }
 
         fn handoff(
             self: &Rc<Self>,
-            mut port: Box<dyn RetirementOutput>,
+            mut port: OwnedPort,
             budget: CleanupBudget,
             emergency: Rc<StopLatch>,
         ) -> Option<Notice> {
@@ -1625,7 +1929,7 @@ mod macos {
     > {
         owner: Rc<CleanupOwner<C, S>>,
         scope: OutputScope,
-        port: Option<Box<dyn RetirementOutput>>,
+        port: Option<OwnedPort>,
         budget: Option<CleanupBudget>,
         emergency: Rc<StopLatch>,
     }
@@ -1665,6 +1969,7 @@ mod macos {
                     .try_borrow_mut()
                     .map_err(|_| native_speech::Error::Busy)?;
                 if obligation.is_some()
+                    || self.owner.accounting.get().is_some()
                     || self
                         .owner
                         .report
@@ -1674,6 +1979,7 @@ mod macos {
                 {
                     return Err(native_speech::Error::Busy);
                 }
+                self.owner.attempted.set(true);
                 *obligation = Some(binding.clone());
             }
             let check = check.with_obligation(&self.owner.obligation);

@@ -2106,3 +2106,61 @@ fn speech_lifecycle_recovery_changes_availability_without_authorizing_a_host() {
     assert!(model.stop_latched);
     assert!(!model.cleanup_complete());
 }
+
+#[test]
+fn modeled_output_guard_is_host_bound_and_leaves_other_resources_independent() {
+    let clock = ManualClock::new();
+    let id = binding();
+    let make = || {
+        SpeechLifecycleHost::synthetic_with_output_resolver(
+            id.run,
+            id.host.0,
+            id.os_session.0,
+            id.generation,
+            clock.now(),
+        )
+    };
+    let (host, trusted) = make();
+    let (foreign, wrong) = make();
+    for value in [&host, &foreign] {
+        assert!(value.apply_speech_event(SpeechLifecycleEvent::Quit, &clock.now()));
+        assert!(value.apply_speech_event(SpeechLifecycleEvent::Terminated, &clock.now()));
+    }
+    let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+    let foreign_ticket = foreign.output_cleanup_ticket().unwrap().unwrap();
+    assert!(matches!(
+        host.prepare_output_ack(&wrong, &ticket),
+        Err(Error::Unauthorized)
+    ));
+    assert!(matches!(
+        host.prepare_output_ack(&trusted, &foreign_ticket),
+        Err(Error::Stale)
+    ));
+    host.while_busy(|| {
+        assert!(matches!(
+            host.prepare_output_ack(&trusted, &ticket),
+            Err(Error::Busy)
+        ))
+    });
+    drop(host.prepare_output_ack(&trusted, &ticket).unwrap());
+    assert!(!host.output_acknowledged());
+
+    host.model
+        .borrow_mut()
+        .resource_ack(&ticket, Resource::Workers, true)
+        .unwrap();
+    host.prepare_output_ack(&trusted, &ticket).unwrap().commit();
+    let mut model = host.model.borrow_mut();
+    let cleanup = model.cleanup.as_ref().unwrap();
+    assert_eq!(cleanup.acknowledged, [true, true, false]);
+    assert!(!model.shutdown_complete());
+    model
+        .resource_ack(&ticket, Resource::Content, true)
+        .unwrap();
+    assert!(model.shutdown_complete());
+    drop(model);
+    assert!(matches!(
+        host.prepare_output_ack(&trusted, &ticket),
+        Err(Error::Stale)
+    ));
+}

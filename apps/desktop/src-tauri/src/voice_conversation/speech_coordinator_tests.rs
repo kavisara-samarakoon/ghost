@@ -18,6 +18,7 @@ type NativeResult<T> = std::result::Result<T, native_speech::Error>;
 struct Clock {
     time: Rc<RefCell<MonotonicTime>>,
     reads: Rc<Cell<usize>>,
+    on_read: Rc<RefCell<Option<Box<dyn FnOnce()>>>>,
 }
 
 impl Clock {
@@ -25,6 +26,7 @@ impl Clock {
         Self {
             time: Rc::new(RefCell::new(ManualClock::new().now())),
             reads: Rc::new(Cell::new(0)),
+            on_read: Default::default(),
         }
     }
 
@@ -37,6 +39,10 @@ impl Clock {
 impl MonotonicClock for Clock {
     fn now(&self) -> MonotonicTime {
         self.reads.set(self.reads.get() + 1);
+        let hook = self.on_read.borrow_mut().take();
+        if let Some(hook) = hook {
+            hook();
+        }
         self.time.borrow().clone()
     }
 }
@@ -1686,6 +1692,310 @@ mod native_driver_ownership {
             Ok(())
         })
         .unwrap();
+    }
+
+    use super::super::macos::{
+        ModeledReleaseAssertion as Assertion, ModeledReleaseIssuer, ReleaseChallenge,
+    };
+
+    fn release_owner(
+        clock: &Clock,
+        scheduler: &FakeScheduler,
+    ) -> (
+        Rc<ModeledOwner>,
+        Rc<SpeechLifecycleHost>,
+        ModeledReleaseIssuer,
+    ) {
+        let id = identity(1);
+        let one = NonZeroU64::new(1).unwrap();
+        let (host, ack) = SpeechLifecycleHost::synthetic_with_output_resolver(
+            id.app_run_id,
+            one,
+            one,
+            id.generation,
+            clock.now(),
+        );
+        let host = Rc::new(host);
+        assert!(host.apply_speech_event(Life::PermissionRestored, &clock.now()));
+        let issuer = ModeledReleaseIssuer::default();
+        let owner = CleanupOwner::with_release_issuer(
+            id.app_run_id,
+            id.generation,
+            clock.clone(),
+            scheduler.clone(),
+            (host.clone(), ack),
+            issuer.clone(),
+        );
+        (owner, host, issuer)
+    }
+
+    #[test]
+    fn modeled_release_consumes_registered_exact_evidence_and_preserves_route_loss() {
+        let clock = Clock::new();
+        let scheduler = FakeScheduler::default();
+        let (owner, host, issuer) = release_owner(&clock, &scheduler);
+        let authority = managed_authority(&clock);
+        let mut cancel = None;
+        let driver = open_modeled(&owner, &clock, identity(1), authority.clone(), |scope| {
+            let (port, callback, _) =
+                native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
+            cancel = Some(callback);
+            Ok(port)
+        })
+        .unwrap();
+        Driver::turn(&driver, |coordinator| {
+            coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+            coordinator.submit()
+        })
+        .unwrap();
+        let control = driver.lifecycle().unwrap();
+        record(&control, Life::RouteChanged);
+        control.service_host(&clock.now());
+        let challenge = owner.release_challenge().unwrap();
+        let ticket = &challenge.ticket;
+        let evidence = Rc::new(
+            issuer
+                .issue(Assertion::Released, challenge.clone())
+                .unwrap(),
+        );
+        assert!(issuer
+            .issue(Assertion::Unknown, challenge.clone())
+            .is_none());
+        assert_eq!(
+            owner.resolve_output(ticket, Some(&evidence)),
+            Err(Error::Busy)
+        );
+        drop(driver);
+        cancel.unwrap()();
+        let during = owner.clone();
+        let active = evidence.clone();
+        let bound = ticket.clone();
+        clock.on_read.replace(Some(Box::new(move || {
+            assert_eq!(
+                during.resolve_output(&bound, Some(&active)),
+                Err(Error::Busy)
+            );
+        })));
+        scheduler.fire();
+        let facts = owner.take_report().unwrap().facts();
+        assert!(owner.take_report().is_none());
+        assert!(CleanupOwner::<Clock, FakeScheduler>::confirmed_retirement(
+            facts
+        ));
+        for detach in [
+            native_speech::Detach::SetterFailed,
+            native_speech::Detach::ReadbackUnknown,
+        ] {
+            let uncertain = native_speech::RetirementFacts { detach, ..facts };
+            assert!(!CleanupOwner::<Clock, FakeScheduler>::confirmed_retirement(
+                uncertain
+            ));
+        }
+        let unknown_association = native_speech::RetirementFacts {
+            uncertainty: native_speech::RetirementUncertainty::DelegateAssociationUnresolved,
+            ..facts
+        };
+        assert!(!CleanupOwner::<Clock, FakeScheduler>::confirmed_retirement(
+            unknown_association
+        ));
+        let ambiguous_finish = native_speech::RetirementFacts {
+            terminal: native_speech::Terminal::Finished,
+            ..facts
+        };
+        assert!(!CleanupOwner::<Clock, FakeScheduler>::confirmed_retirement(
+            ambiguous_finish
+        ));
+
+        assert_eq!(owner.resolve_output(ticket, None), Err(Error::Unauthorized));
+        let foreign = ModeledReleaseIssuer::default()
+            .issue(Assertion::Released, challenge.clone())
+            .unwrap();
+        assert_eq!(
+            owner.resolve_output(ticket, Some(&foreign)),
+            Err(Error::Unauthorized)
+        );
+        let scope = owner.modeled_scope();
+        let wrong_route = OutputScope::new(
+            identity(1).app_run_id,
+            identity(1).generation.checked_next().unwrap(),
+        );
+        for flight in [
+            scope.bind(identity(1), 1),
+            scope.bind(identity(1), 2),
+            scope.bind(identity(2), 1),
+            wrong_route.bind(identity(1), 1),
+        ] {
+            let wrong = issuer
+                .issue(
+                    Assertion::Released,
+                    ReleaseChallenge {
+                        flight,
+                        ticket: ticket.clone(),
+                    },
+                )
+                .unwrap();
+            assert_eq!(
+                owner.resolve_output(ticket, Some(&wrong)),
+                Err(Error::Unauthorized)
+            );
+        }
+        let (_, foreign_host, _) = release_owner(&clock, &scheduler);
+        assert!(foreign_host.apply_speech_event(Life::Stop, &clock.now()));
+        let wrong_ticket = foreign_host.output_cleanup_ticket().unwrap().unwrap();
+        let wrong = issuer
+            .issue(
+                Assertion::Released,
+                ReleaseChallenge {
+                    flight: challenge.flight.clone(),
+                    ticket: wrong_ticket.clone(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            owner.resolve_output(ticket, Some(&wrong)),
+            Err(Error::Unauthorized)
+        );
+        assert_eq!(
+            owner.resolve_output(&wrong_ticket, Some(&evidence)),
+            Err(Error::Unauthorized)
+        );
+
+        host.while_busy(|| {
+            assert_eq!(
+                owner.resolve_output(ticket, Some(&evidence)),
+                Err(Error::Busy)
+            )
+        });
+        for report in [false, true] {
+            owner.while_release_slot_busy(report, || {
+                assert_eq!(
+                    owner.resolve_output(ticket, Some(&evidence)),
+                    Err(Error::Busy)
+                );
+            });
+        }
+        assert_eq!(
+            owner.release_challenge().unwrap().flight.identity(),
+            identity(1)
+        );
+        assert!(!host.output_acknowledged());
+        assert!(!evidence.was_consumed());
+        assert_eq!(owner.resolve_output(ticket, Some(&evidence)), Ok(()));
+        assert!(evidence.was_consumed());
+        assert!(host.output_acknowledged());
+        assert_eq!(
+            owner.resolve_output(ticket, Some(&evidence)),
+            Err(Error::Unauthorized)
+        );
+        assert!(owner.release_challenge().is_err());
+        assert!(authority.borrow().scope.is_none());
+        assert!(matches!(
+            open_modeled(
+                &owner,
+                &clock,
+                identity(1),
+                managed_authority(&clock),
+                |_| { panic!("route loss blocks the factory after modeled release") }
+            ),
+            Err(Error::Closed)
+        ));
+    }
+
+    #[test]
+    fn exact_idle_and_never_submitted_cleanup_do_not_need_release_evidence() {
+        for prepared in [false, true] {
+            let clock = Clock::new();
+            let scheduler = FakeScheduler::default();
+            let (owner, host, _) = release_owner(&clock, &scheduler);
+            let hook = Rc::new(RefCell::new(None::<LifecycleIngress>));
+            let at_attach = hook.clone();
+            let mut dispatches = None;
+            let driver = open_modeled(
+                &owner,
+                &clock,
+                identity(1),
+                managed_authority(&clock),
+                |scope| {
+                    let (port, count) = native_speech::preparation_fixture(
+                        scope,
+                        clock.clone(),
+                        voice(),
+                        move || {
+                            record(at_attach.borrow().as_ref().unwrap(), Life::Stop);
+                        },
+                    );
+                    dispatches = Some(count);
+                    Ok(port)
+                },
+            )
+            .unwrap();
+            let ingress = driver.lifecycle().unwrap();
+            *hook.borrow_mut() = Some(ingress.clone());
+            if prepared {
+                assert_eq!(
+                    Driver::turn(&driver, |coordinator| {
+                        coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                        coordinator.submit()
+                    }),
+                    Err(Error::Native(native_speech::Error::Unauthorized))
+                );
+            } else {
+                record(&ingress, Life::Stop);
+                ingress.service_host(&clock.now());
+            }
+            let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+            assert_eq!(owner.resolve_output(&ticket, None), Err(Error::Busy));
+            assert!(!host.output_acknowledged());
+            drop(driver);
+            assert_eq!(dispatches.unwrap().get(), 0);
+            assert_eq!(owner.resolve_output(&ticket, None), Ok(()));
+            assert!(host.output_acknowledged());
+            assert_eq!(
+                owner.resolve_output(&ticket, None),
+                Err(Error::Unauthorized)
+            );
+            if prepared {
+                assert!(owner.take_report().unwrap().can_abandon_unsubmitted());
+            }
+            assert!(owner.take_report().is_none());
+        }
+    }
+
+    #[test]
+    fn modeled_release_cannot_substitute_for_a_missing_native_terminal() {
+        let clock = Clock::new();
+        let scheduler = FakeScheduler::default();
+        let (owner, host, issuer) = release_owner(&clock, &scheduler);
+        let driver = open_modeled(
+            &owner,
+            &clock,
+            identity(1),
+            managed_authority(&clock),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        )
+        .unwrap();
+        Driver::turn(&driver, |coordinator| {
+            coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+            coordinator.submit()
+        })
+        .unwrap();
+        record(&driver.lifecycle().unwrap(), Life::Stop);
+        drop(driver);
+        clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
+        scheduler.fire();
+        let facts = owner.take_report().unwrap().facts();
+        assert_eq!(facts.terminal, native_speech::Terminal::Unresolved);
+        assert_eq!(facts.detach, native_speech::Detach::VerifiedNil);
+        let challenge = owner.release_challenge().unwrap();
+        let evidence = issuer
+            .issue(Assertion::Released, challenge.clone())
+            .unwrap();
+        assert_eq!(
+            owner.resolve_output(&challenge.ticket, Some(&evidence)),
+            Err(Error::Unauthorized)
+        );
+        assert!(!host.output_acknowledged());
+        assert_cleanup_owner_busy(&owner);
     }
 
     fn managed_authority(clock: &Clock) -> LocalAuthority {

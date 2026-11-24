@@ -18,7 +18,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Error {
+pub(super) enum Error {
     Contract(ContractError),
     Stale,
     Busy,
@@ -230,7 +230,13 @@ enum Resource {
     Content,
 }
 #[derive(Clone, Debug)]
-struct CleanupTicket(Stamp);
+pub(super) struct CleanupTicket(Stamp);
+
+impl CleanupTicket {
+    pub(super) fn matches(&self, other: &Self) -> bool {
+        self.0.matches(&other.0)
+    }
+}
 #[derive(Clone, Debug)]
 struct FrameTicket {
     cleanup: CleanupTicket,
@@ -1041,10 +1047,22 @@ impl SpeechLifecycleEvent {
 }
 
 /// One modeled host instance. NativeControl and HostModel remain private.
-/// The adapter can request transitions; it cannot acknowledge resources.
+/// The adapter can request transitions. Only its registered output resolver
+/// can acquire the acknowledgement guard.
 pub(super) struct SpeechLifecycleHost {
     model: std::cell::RefCell<HostModel>,
     control: NativeControl,
+    output_resolver: Option<std::rc::Rc<()>>,
+}
+
+pub(super) struct OutputAckAuthority(std::rc::Rc<()>);
+
+pub(super) struct OutputAckGuard<'a>(std::cell::RefMut<'a, bool>);
+
+impl OutputAckGuard<'_> {
+    pub(super) fn commit(mut self) {
+        *self.0 = true;
+    }
 }
 
 impl SpeechLifecycleHost {
@@ -1068,11 +1086,69 @@ impl SpeechLifecycleHost {
         Self {
             model: std::cell::RefCell::new(model),
             control,
+            output_resolver: None,
         }
     }
 
     pub(super) fn run(&self) -> AppRunId {
         self.control.binding.run
+    }
+
+    pub(super) fn synthetic_with_output_resolver(
+        run: AppRunId,
+        host: NonZeroU64,
+        os_session: NonZeroU64,
+        observer: Generation,
+        now: MonotonicTime,
+    ) -> (Self, OutputAckAuthority) {
+        let mut host = Self::synthetic(run, host, os_session, observer, now);
+        let key = std::rc::Rc::new(());
+        host.output_resolver = Some(key.clone());
+        (host, OutputAckAuthority(key))
+    }
+
+    pub(super) fn output_cleanup_ticket(&self) -> Result<Option<CleanupTicket>> {
+        let host = self.model.try_borrow().map_err(|_| Error::Busy)?;
+        let output = Resource::Output as usize;
+        Ok(host
+            .cleanup
+            .as_ref()
+            .filter(|cleanup| cleanup.required[output])
+            .map(|cleanup| cleanup.ticket.clone()))
+    }
+
+    pub(super) fn prepare_output_ack(
+        &self,
+        authority: &OutputAckAuthority,
+        ticket: &CleanupTicket,
+    ) -> Result<OutputAckGuard<'_>> {
+        if !self
+            .output_resolver
+            .as_ref()
+            .is_some_and(|key| std::rc::Rc::ptr_eq(key, &authority.0))
+        {
+            return Err(Error::Unauthorized);
+        }
+        let host = self.model.try_borrow_mut().map_err(|_| Error::Busy)?;
+        let guard = std::cell::RefMut::filter_map(host, |host| {
+            let cleanup = host.cleanup.as_mut()?;
+            let index = Resource::Output as usize;
+            (cleanup.ticket.matches(ticket)
+                && cleanup.required[index]
+                && !cleanup.acknowledged[index])
+                .then_some(&mut cleanup.acknowledged[index])
+        })
+        .map_err(|_| Error::Stale)?;
+        Ok(OutputAckGuard(guard))
+    }
+
+    #[cfg(test)]
+    pub(super) fn output_acknowledged(&self) -> bool {
+        self.model
+            .borrow()
+            .cleanup
+            .as_ref()
+            .is_some_and(|cleanup| cleanup.acknowledged[Resource::Output as usize])
     }
 
     pub(super) fn admission_available(&self) -> bool {
