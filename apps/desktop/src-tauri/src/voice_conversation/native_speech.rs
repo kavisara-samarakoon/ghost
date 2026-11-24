@@ -2,9 +2,12 @@
 //! queue. This test-only bridge owns at most one submitted utterance and reports
 //! evidence as data. There is no callback into the caller or a follow-up action.
 use super::clock::{Deadline, MonotonicClock, MonotonicTime};
-use super::limits::{checked_total, MAX_SPEECH_JOB_TEXT_BYTES, SPEECH_OUTPUT_DEADLINE};
+use super::limits::{
+    checked_total, MAX_AGGREGATE_TURNS, MAX_SPEECH_JOB_TEXT_BYTES, SPEECH_OUTPUT_DEADLINE,
+};
 use super::model::{AppRunId, ContractIdentity, Generation, JobId, SpeechOutcome};
 use super::ContractError;
+use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
 use std::sync::{Arc, Mutex};
 
@@ -17,6 +20,7 @@ const MAX_VOICE_LANGUAGE_BYTES: usize = 64;
 pub(super) enum Error {
     Contract(ContractError),
     BackendUnavailable,
+    Unauthorized,
     NativeFailure,
     InvalidText,
     InvalidVoiceId,
@@ -335,7 +339,7 @@ impl Inbox {
     }
 
     fn arm(&self) -> Result<()> {
-        let mut state = self.state.lock().map_err(|_| Error::NativeFailure)?;
+        let mut state = self.state.try_lock().map_err(|_| Error::NativeFailure)?;
         state.observation = Observation::Waiting;
         Ok(())
     }
@@ -426,7 +430,11 @@ trait Backend: Sized {
     fn find_voice(&self, id: &VoiceId) -> Result<Option<(VoiceId, Self::Voice)>>;
     fn prepare(&self, voice: Self::Voice, text: &str) -> Result<(Self::Utterance, NativeObjects)>;
     fn attach(&mut self, inbox: Arc<Inbox>) -> Result<()>;
-    fn speak(&self, utterance: &Self::Utterance) -> Result<()>;
+    fn speak(
+        &self,
+        utterance: &Self::Utterance,
+        before_dispatch: impl FnOnce() -> Result<()>,
+    ) -> Result<()>;
     fn stop_immediately(&self) -> Result<bool>;
     fn detach(&mut self) -> Detach;
 }
@@ -444,6 +452,110 @@ fn validate_inventory(voices: Vec<Voice>) -> Result<Vec<Voice>> {
     Ok(voices)
 }
 
+/// Independent synthetic authority, with no provider or callback interface.
+#[derive(Clone)]
+pub(super) struct LocalSpeechGrant {
+    pub(super) identity: ContractIdentity,
+    pub(super) deadline: Deadline,
+    pub(super) speaker: bool,
+    pub(super) source: bool,
+}
+
+#[derive(Default)]
+pub(super) struct LocalAuthorityFacts {
+    pub(super) scope: Option<ContractIdentity>,
+    pub(super) grants: [Option<LocalSpeechGrant>; MAX_AGGREGATE_TURNS as usize],
+}
+
+pub(super) type LocalAuthorityState = RefCell<LocalAuthorityFacts>;
+
+pub(super) fn same_session(scope: ContractIdentity, identity: ContractIdentity) -> bool {
+    scope
+        == (ContractIdentity {
+            turn_id: scope.turn_id,
+            job_id: scope.job_id,
+            ..identity
+        })
+}
+
+/// Stack-bound and consumed once. The managed owner supplies the independent
+/// outstanding obligation. The coordinator supplies the trusted local state.
+pub(super) struct SubmissionCheck<'a> {
+    expected: Option<&'a FlightBinding>,
+    authority: &'a LocalAuthorityState,
+    revoked: &'a Cell<bool>,
+    validated_at: &'a MonotonicTime,
+    deadlines: [&'a Deadline; 2],
+    obligation: Option<&'a RefCell<Option<FlightBinding>>>,
+}
+
+impl<'a> SubmissionCheck<'a> {
+    pub(super) fn new(
+        expected: &'a FlightBinding,
+        authority: &'a LocalAuthorityState,
+        revoked: &'a Cell<bool>,
+        validated_at: &'a MonotonicTime,
+        deadlines: [&'a Deadline; 2],
+    ) -> Self {
+        Self {
+            expected: Some(expected),
+            authority,
+            revoked,
+            validated_at,
+            deadlines,
+            obligation: None,
+        }
+    }
+
+    pub(super) fn with_obligation(
+        mut self,
+        obligation: &'a RefCell<Option<FlightBinding>>,
+    ) -> Self {
+        self.obligation = Some(obligation);
+        self
+    }
+
+    pub(super) fn check(&mut self, flight: &FlightBinding, now: &MonotonicTime) -> Result<()> {
+        let expected = self.expected.take().ok_or(Error::Unauthorized)?;
+        let obligation = self.obligation.ok_or(Error::Unauthorized)?;
+        if !expected.matches(flight)
+            || !obligation
+                .try_borrow()
+                .map_err(|_| Error::Busy)?
+                .as_ref()
+                .is_some_and(|pending| pending.matches(flight))
+        {
+            return Err(Error::Unauthorized);
+        }
+        now.checked_duration_since(self.validated_at)?;
+        let authority = self.authority.try_borrow().map_err(|_| Error::Busy)?;
+        if !authority
+            .scope
+            .is_some_and(|scope| same_session(scope, flight.identity()))
+        {
+            return Err(Error::Unauthorized);
+        }
+        let mut matching = authority
+            .grants
+            .iter()
+            .flatten()
+            .filter(|grant| grant.identity == flight.identity());
+        let grant = matching.next().ok_or(Error::Unauthorized)?;
+        if matching.next().is_some() || !grant.speaker || !grant.source {
+            return Err(Error::Unauthorized);
+        }
+        for deadline in self.deadlines.into_iter().chain([&grant.deadline]) {
+            if deadline.is_expired(now)? {
+                return Err(Error::Deadline);
+            }
+        }
+        if self.revoked.get() {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+}
+
 pub(super) trait SpeechOutput {
     fn request(
         &mut self,
@@ -452,6 +564,7 @@ pub(super) trait SpeechOutput {
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
+        check: SubmissionCheck<'_>,
     ) -> Result<Notice>;
     fn stop(&mut self, identity: ContractIdentity, origin: StopOrigin) -> Result<Notice>;
     fn poll(&mut self) -> Option<Notice>;
@@ -469,6 +582,7 @@ struct Flight<U> {
     inbox: Arc<Inbox>,
     deadline: Deadline,
     first_stop: Option<(StopOrigin, StopAttempt)>,
+    submission: Submission,
 }
 
 impl<U> Flight<U> {
@@ -549,6 +663,14 @@ impl<B: Backend, C: MonotonicClock> Port<B, C> {
         }
     }
 
+    fn retire_unsubmitted(&mut self, error: Error) -> Result<Notice> {
+        let flight = self.active.take().expect("prepared flight");
+        let (_, detach) = self.clear_delegate(&flight.inbox);
+        let binding = flight.binding.clone();
+        drop(flight);
+        self.unsubmitted(binding, Attachment::Attached, detach, error)
+    }
+
     fn unsubmitted(
         &mut self,
         binding: FlightBinding,
@@ -588,7 +710,7 @@ impl<B: Backend, C: MonotonicClock> Port<B, C> {
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
-    ) -> Result<(B::Utterance, NativeObjects, Deadline)> {
+    ) -> Result<(B::Utterance, NativeObjects, Deadline, MonotonicTime)> {
         let bytes = u64::try_from(text.len()).map_err(|_| ContractError::Overflow)?;
         checked_total(0, bytes, MAX_SPEECH_JOB_TEXT_BYTES)?;
         if text.trim().is_empty() || text.contains('\0') {
@@ -612,7 +734,7 @@ impl<B: Backend, C: MonotonicClock> Port<B, C> {
         if objects.synthesizer == 0 || objects.utterance == 0 {
             return Err(Error::NativeFailure);
         }
-        Ok((utterance, objects, deadline))
+        Ok((utterance, objects, deadline, now))
     }
 }
 
@@ -624,6 +746,7 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
+        mut check: SubmissionCheck<'_>,
     ) -> Result<Notice> {
         if self.closed {
             return Err(Error::Closed);
@@ -642,17 +765,18 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
             return Err(Error::Busy);
         }
 
-        let (utterance, objects, deadline) = match self.prepare(sequence, text, voice, admitted) {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                return self.unsubmitted(
-                    binding,
-                    Attachment::NeverAttempted,
-                    Detach::NotNeeded,
-                    error,
-                )
-            }
-        };
+        let (utterance, objects, deadline, prepared_since) =
+            match self.prepare(sequence, text, voice, admitted) {
+                Ok(prepared) => prepared,
+                Err(error) => {
+                    return self.unsubmitted(
+                        binding,
+                        Attachment::NeverAttempted,
+                        Detach::NotNeeded,
+                        error,
+                    )
+                }
+            };
         let inbox = Arc::new(Inbox::new(CallbackKey { identity, objects }));
         if let Err(error) = self.backend.attach(Arc::clone(&inbox)) {
             let (_, detach) = self.clear_delegate(&inbox);
@@ -660,27 +784,31 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
             drop(inbox);
             return self.unsubmitted(binding, Attachment::MayHaveAttached, detach, error);
         }
-        let ready = if deadline.is_expired(&self.clock.now()).unwrap_or(true) {
-            Err(Error::Deadline)
-        } else {
-            inbox.arm()
-        };
-        if let Err(error) = ready {
-            let (_, detach) = self.clear_delegate(&inbox);
-            drop(utterance);
-            drop(inbox);
-            return self.unsubmitted(binding, Attachment::Attached, detach, error);
-        }
         self.active = Some(Flight {
             binding,
             utterance,
             inbox,
             deadline,
             first_stop: None,
+            submission: Submission::NeverSubmitted,
         });
-        // Publish the possibly submitted flight before entering native code.
         let flight = self.active.as_mut().expect("just installed the flight");
-        if let Err(error) = self.backend.speak(&flight.utterance) {
+        let result = self.backend.speak(&flight.utterance, || {
+            let now = self.clock.now();
+            now.checked_duration_since(&prepared_since)?;
+            if flight.deadline.is_expired(&now)? {
+                return Err(Error::Deadline);
+            }
+            check.check(&flight.binding, &now)?;
+            flight.inbox.arm()?;
+            // The backend must dispatch immediately after this marker.
+            flight.submission = Submission::PossiblySubmitted;
+            Ok(())
+        });
+        if flight.submission == Submission::NeverSubmitted {
+            return self.retire_unsubmitted(result.err().unwrap_or(Error::NativeFailure));
+        }
+        if let Err(error) = result {
             Self::request_stop(&self.backend, flight, StopOrigin::SubmissionFailure);
             return Ok(flight.notice(Evidence::Failure(error)));
         }
@@ -689,7 +817,8 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
 
     fn stop(&mut self, identity: ContractIdentity, origin: StopOrigin) -> Result<Notice> {
         let flight = self.active.as_mut().ok_or(Error::StaleJob)?;
-        if flight.binding.identity() != identity {
+        if flight.binding.identity() != identity || flight.submission == Submission::NeverSubmitted
+        {
             return Err(Error::StaleJob);
         }
         Ok(Self::request_stop(&self.backend, flight, origin))
@@ -697,6 +826,9 @@ impl<B: Backend, C: MonotonicClock> SpeechOutput for Port<B, C> {
 
     fn poll(&mut self) -> Option<Notice> {
         let flight = self.active.as_mut()?;
+        if flight.submission == Submission::NeverSubmitted {
+            return None;
+        }
         if flight.first_stop.is_none()
             && flight
                 .deadline
@@ -735,6 +867,10 @@ impl<B: Backend, C: MonotonicClock> RetirementOutput for Port<B, C> {
     fn begin_retirement(&mut self) -> Option<Notice> {
         self.closed = true;
         let flight = self.active.as_mut()?;
+        if flight.submission == Submission::NeverSubmitted {
+            let _ = self.retire_unsubmitted(Error::NativeFailure);
+            return None;
+        }
         Some(Self::request_stop(
             &self.backend,
             flight,
@@ -762,7 +898,7 @@ pub(super) use macos::{installed_voices, open};
 mod macos {
     use super::*;
     use objc2::rc::{autoreleasepool, Retained};
-    use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, NSObject, NSObjectProtocol};
+    use objc2::runtime::{AnyClass, AnyObject, AnyProtocol, Bool, NSObject, NSObjectProtocol, Sel};
     use objc2::{
         define_class, extern_protocol, msg_send, sel, AnyThread, DefinedClass, MainThreadMarker,
     };
@@ -1071,14 +1207,32 @@ mod macos {
             })
         }
 
-        fn speak(&self, utterance: &Self::Utterance) -> Result<()> {
+        fn speak(
+            &self,
+            utterance: &Self::Utterance,
+            before_dispatch: impl FnOnce() -> Result<()>,
+        ) -> Result<()> {
             native_call(|| {
-                // SAFETY: A fresh, validated utterance is submitted once to the
-                // owned synthesizer, on its main thread. Both live through the
-                // void call. No other utterance is queued in the bridge.
-                unsafe {
-                    let _: () = msg_send![&*self.synthesizer, speakUtterance: &*utterance.object];
-                }
+                let selector = sel!(speakUtterance:);
+                // objc2's debug message path performs method lookup, which
+                // can resolve methods. Perform validation before the final gate.
+                self.synthesizer
+                    .class()
+                    .verify_sel::<(*mut AnyObject,), ()>(selector)
+                    .map_err(|_| Error::NativeFailure)?;
+                let receiver = Retained::as_ptr(&self.synthesizer).cast_mut();
+                let argument = Retained::as_ptr(&utterance.object).cast_mut();
+                type SendSpeech = unsafe extern "C-unwind" fn(*mut AnyObject, Sel, *mut AnyObject);
+                // SAFETY: Apple declares a void object-argument method. Use
+                // the same typed objc_msgSend ABI as objc2's Apple dispatch.
+                let send: SendSpeech = unsafe {
+                    std::mem::transmute(objc2::ffi::objc_msgSend as unsafe extern "C-unwind" fn())
+                };
+                before_dispatch()?;
+                // SAFETY: The selector signature was verified above. Both
+                // retained objects outlive the call on the main thread, and
+                // the enclosing native_call catches Objective-C exceptions.
+                unsafe { send(receiver, selector, argument) };
                 Ok(())
             })
         }
@@ -1133,4 +1287,4 @@ mod macos {
 mod tests;
 
 #[cfg(all(test, target_os = "macos"))]
-pub(super) use tests::retirement_fixture;
+pub(super) use tests::{preparation_fixture, retirement_fixture};

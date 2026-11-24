@@ -6,6 +6,7 @@ use crate::voice_conversation::limits::{
 use crate::voice_conversation::model::*;
 use crate::voice_conversation::native_speech::StopAttempt;
 use crate::voice_conversation::ContractError;
+use native_speech::{LocalAuthorityFacts, LocalSpeechGrant};
 use std::cell::{Cell, RefCell};
 use std::cmp::Ordering;
 use std::collections::VecDeque;
@@ -58,6 +59,7 @@ struct Script {
     stop: NativeResult<Evidence>,
     during_request: Option<Evidence>,
     on_prepare: Option<Box<dyn FnOnce()>>,
+    request_clock: Option<Clock>,
     during_stop: Option<Evidence>,
     at_shutdown: Option<Notice>,
     after_poll: Option<Box<dyn FnOnce()>>,
@@ -79,6 +81,7 @@ impl Default for Script {
             stop: Ok(Evidence::CancellationUnconfirmed(StopAttempt::Accepted)),
             during_request: None,
             on_prepare: None,
+            request_clock: None,
             during_stop: None,
             at_shutdown: None,
             after_poll: None,
@@ -98,10 +101,17 @@ impl SpeechOutput for Script {
         text: &str,
         voice: &VoiceId,
         admitted: &MonotonicTime,
+        check: SubmissionCheck<'_>,
     ) -> NativeResult<Notice> {
         if let Some(hook) = self.on_prepare.take() {
             hook();
         }
+        let obligation = RefCell::new(Some(binding.clone()));
+        let now = self
+            .request_clock
+            .as_ref()
+            .map_or_else(|| admitted.clone(), MonotonicClock::now);
+        check.with_obligation(&obligation).check(&binding, &now)?;
         let identity = binding.identity();
         self.requests.push(Request {
             identity,
@@ -153,19 +163,12 @@ impl Drop for Script {
     }
 }
 
-#[derive(Clone)]
-struct Policy {
-    deadline: Deadline,
-    speaker: bool,
-    source: bool,
-}
-
 type Gate = Box<dyn Fn(ContractIdentity) -> Option<Validation>>;
 type TestCoordinator = Coordinator<Script, Clock, Gate>;
 
 struct Fixture {
     coordinator: TestCoordinator,
-    policies: Rc<RefCell<[Option<Policy>; 4]>>,
+    policies: LocalAuthority,
     clock: Clock,
 }
 
@@ -197,17 +200,21 @@ fn notice(sequence: u64, evidence: Evidence) -> Notice {
 impl Fixture {
     fn new() -> Self {
         let clock = Clock::new();
-        let policies = Rc::new(RefCell::new(std::array::from_fn(|_| {
-            Some(Policy {
-                deadline: Deadline::after(clock.now(), Duration::from_secs(300)).unwrap(),
-                speaker: true,
-                source: true,
-            })
-        })));
+        let policies: LocalAuthority = Rc::new(RefCell::new(LocalAuthorityFacts {
+            scope: Some(identity(1)),
+            grants: std::array::from_fn(|index| {
+                (index < 4).then(|| LocalSpeechGrant {
+                    identity: identity(index as u64 + 1),
+                    deadline: Deadline::after(clock.now(), Duration::from_secs(300)).unwrap(),
+                    speaker: true,
+                    source: true,
+                })
+            }),
+        }));
         let source = policies.clone();
         let validate: Gate = Box::new(move |job| {
             let index = (1..=4).position(|sequence| identity(sequence) == job)?;
-            let policy = source.borrow()[index].clone()?;
+            let policy = source.borrow().grants[index].clone()?;
             Some(Validation {
                 identity: job,
                 role: ProviderRole::Tts,
@@ -218,14 +225,21 @@ impl Fixture {
             })
         });
         let scope = identity(1);
-        let coordinator = Coordinator::new(
-            Script::default(),
+        let mut script = Script::default();
+        script.request_clock = Some(clock.clone());
+        let mut coordinator = Coordinator::new(
+            script,
             clock.clone(),
             validate,
+            policies.clone(),
             scope.app_run_id,
             scope.interaction_id,
         )
         .unwrap();
+        coordinator.emergency = Some(Rc::new(StopLatch::new(
+            coordinator.output_scope.clone(),
+            scope,
+        )));
         Self {
             coordinator,
             policies,
@@ -266,7 +280,7 @@ impl Fixture {
 
     fn deadline(&self, sequence: usize, delay: Duration) {
         let at = Deadline::after(self.clock.now(), delay).unwrap();
-        self.policies.borrow_mut()[sequence - 1]
+        self.policies.borrow_mut().grants[sequence - 1]
             .as_mut()
             .unwrap()
             .deadline = at;
@@ -673,7 +687,7 @@ fn positive_evidence_rechecks_authorization_after_polling() {
     f.request(1);
     let policies = f.policies.clone();
     f.coordinator.port.after_poll = Some(Box::new(move || {
-        policies.borrow_mut()[0].as_mut().unwrap().speaker = false;
+        policies.borrow_mut().grants[0].as_mut().unwrap().speaker = false;
     }));
     f.push(1, Evidence::Started);
     assert_eq!(f.wake(), Err(Error::Unauthorized));
@@ -690,7 +704,7 @@ fn promoted_job_must_pass_fresh_source_eligibility_checks() {
     f.push(1, Evidence::Started);
     f.push(1, Evidence::Finished);
     f.wake().unwrap();
-    f.policies.borrow_mut()[1].as_mut().unwrap().source = false;
+    f.policies.borrow_mut().grants[1].as_mut().unwrap().source = false;
     assert_eq!(f.coordinator.submit(), Err(Error::Unauthorized));
     assert_eq!(f.coordinator.port.requests.len(), 1);
 }
@@ -727,7 +741,7 @@ fn clock_rollback_and_foreign_domains_revoke_even_with_live_output() {
 fn foreign_authorization_deadline_cannot_allocate_or_extend_a_lease() {
     let mut f = Fixture::new();
     let foreign = Deadline::after(ManualClock::new().now(), Duration::from_secs(300)).unwrap();
-    f.policies.borrow_mut()[0].as_mut().unwrap().deadline = foreign;
+    f.policies.borrow_mut().grants[0].as_mut().unwrap().deadline = foreign;
     assert_eq!(
         f.coordinator.admit(identity(1), 1, "Test".into(), voice()),
         Err(Error::Contract(ContractError::ClockDomainMismatch))
@@ -1189,11 +1203,10 @@ mod native_driver_ownership {
                         coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
                         coordinator.port.on_prepare = Some(hook);
                         coordinator.port.during_request = Some(Evidence::Started);
-                        // The fake crosses its submission edge after the Stop hook.
-                        // P2-03D must prevent that call. P2-03C suppresses the notice.
+                        // The fake reaches its guarded dispatch edge after the Stop hook.
                         coordinator.submit()
                     }),
-                    Err(Error::Closed)
+                    Err(Error::Native(native_speech::Error::Unauthorized))
                 );
             } else {
                 start(&driver);
@@ -1210,8 +1223,11 @@ mod native_driver_ownership {
                 .unwrap();
             }
             TestDriver::turn(&driver, |coordinator| {
-                assert_eq!(coordinator.port.requests.len(), 1);
-                assert_eq!(coordinator.port.stops, [identity(1)]);
+                assert_eq!(
+                    coordinator.port.requests.len(),
+                    usize::from(!during_prepare)
+                );
+                assert_eq!(coordinator.port.stops.len(), usize::from(!during_prepare));
                 assert_eq!(coordinator.cleanup, Cleanup::Unresolved);
                 assert_eq!(coordinator.logical.capacity.usage(), (0, 0, 0));
                 assert!(coordinator.cancellation.is_none());
@@ -1323,6 +1339,18 @@ mod native_driver_ownership {
         assert_eq!(stop.record(), IntentRecording::Stale);
     }
 
+    fn managed_authority(clock: &Clock) -> LocalAuthority {
+        let authority = LocalAuthority::default();
+        authority.borrow_mut().scope = Some(identity(1));
+        authority.borrow_mut().grants[0] = Some(LocalSpeechGrant {
+            identity: identity(1),
+            deadline: Deadline::after(clock.now(), Duration::from_secs(300)).unwrap(),
+            speaker: true,
+            source: true,
+        });
+        authority
+    }
+
     fn cleanup_owner(
         clock: Clock,
         scheduler: FakeScheduler,
@@ -1339,9 +1367,84 @@ mod native_driver_ownership {
         let result = owner.open_driver(
             identity(1),
             |_| None,
+            Default::default(),
             |_| panic!("an unresolved flight must block the factory"),
         );
         assert!(matches!(result, Err(Error::Busy)));
+    }
+
+    #[test]
+    fn managed_bridge_denies_preparation_stop_before_dispatch_and_retires_exact_obligation() {
+        let clock = Clock::new();
+        let owner = cleanup_owner(clock.clone(), FakeScheduler::default());
+        let validated_clock = clock.clone();
+        let control = Rc::new(RefCell::new(None::<EmergencyStop>));
+        let reentrant = control.clone();
+        let mut dispatches = None;
+        let driver = owner
+            .open_driver(
+                identity(1),
+                move |id| {
+                    Some(Validation {
+                        identity: id,
+                        role: ProviderRole::Tts,
+                        deadline: Deadline::after(validated_clock.now(), Duration::from_secs(300))
+                            .unwrap(),
+                        source_eligible: true,
+                        speaker_allowed: true,
+                        cloud_tts_allowed: false,
+                    })
+                },
+                managed_authority(&clock),
+                |scope| {
+                    let (port, count) = native_speech::preparation_fixture(
+                        scope,
+                        clock.clone(),
+                        voice(),
+                        move || {
+                            assert_eq!(
+                                reentrant.borrow().as_ref().unwrap().record(),
+                                IntentRecording::Recorded
+                            )
+                        },
+                    );
+                    dispatches = Some(count);
+                    Ok(port)
+                },
+            )
+            .unwrap();
+        *control.borrow_mut() = driver.emergency_stop();
+        assert_eq!(
+            Driver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                coordinator.submit()
+            }),
+            Err(Error::Native(native_speech::Error::Unauthorized))
+        );
+        assert_eq!(dispatches.unwrap().get(), 0);
+        let report = owner.take_report().unwrap();
+        assert_eq!(
+            report.facts().submission,
+            native_speech::Submission::NeverSubmitted
+        );
+        assert_eq!(report.facts().first_stop, None);
+        assert_eq!(report.facts().detach, native_speech::Detach::VerifiedNil);
+        assert!(report.can_abandon_unsubmitted());
+        Driver::turn(&driver, |coordinator| {
+            assert!(coordinator.revoked);
+            assert!(coordinator.cancellation.is_none());
+            assert_eq!(coordinator.logical.capacity.usage(), (0, 0, 0));
+            Ok(())
+        })
+        .unwrap();
+        drop(driver);
+        let later = owner.open_driver(
+            identity(1),
+            |_| None,
+            Default::default(),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        );
+        assert!(later.is_ok());
     }
 
     #[test]
@@ -1368,6 +1471,7 @@ mod native_driver_ownership {
                         cloud_tts_allowed: false,
                     })
                 },
+                managed_authority(&clock),
                 |scope| {
                     let (port, cancel, count) = native_speech::retirement_fixture(
                         scope,
@@ -1457,6 +1561,7 @@ mod native_driver_ownership {
                             cloud_tts_allowed: false,
                         })
                     },
+                    managed_authority(&clock),
                     |scope| {
                         let (port, _, count) =
                             native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
@@ -1530,6 +1635,7 @@ mod native_driver_ownership {
                         cloud_tts_allowed: false,
                     })
                 },
+                managed_authority(&clock),
                 |scope| {
                     let (port, _, _) =
                         native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
@@ -1562,6 +1668,7 @@ mod native_driver_ownership {
                 ..identity(1)
             },
             |_| None,
+            Default::default(),
             |scope| Ok(native_speech::retirement_fixture(scope, clock, voice(), || {}).0),
         );
         let later = later.unwrap();

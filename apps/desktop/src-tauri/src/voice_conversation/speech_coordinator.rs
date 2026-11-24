@@ -7,9 +7,10 @@ use crate::voice_conversation::model::{
     AppRunId, ContractIdentity, Generation, InteractionId, SpeechState,
 };
 use crate::voice_conversation::native_speech::{
-    self, Evidence, FlightBinding, Notice, OutputScope, SpeechOutput, StopOrigin, VoiceId,
+    self, Evidence, FlightBinding, LocalAuthorityState, Notice, OutputScope, SpeechOutput,
+    StopOrigin, SubmissionCheck, VoiceId,
 };
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::{Rc, Weak};
 use std::sync::Arc;
 use std::time::Duration;
@@ -92,12 +93,7 @@ impl StopLatch {
     }
 
     fn covers(&self, identity: ContractIdentity) -> bool {
-        self.session
-            == ContractIdentity {
-                turn_id: self.session.turn_id,
-                job_id: self.session.job_id,
-                ..identity
-            }
+        native_speech::same_session(self.session, identity)
     }
 
     fn service(&self) -> bool {
@@ -159,6 +155,8 @@ impl SubmissionStopCheck<'_> {
     }
 }
 
+type LocalAuthority = Rc<LocalAuthorityState>;
+
 struct Admission {
     sequence: u64,
     admitted: MonotonicTime,
@@ -184,6 +182,7 @@ struct Coordinator<P: SpeechOutput, C, A> {
     emergency: Option<Rc<StopLatch>>,
     clock: C,
     validate: A,
+    authority: LocalAuthority,
     admissions: [Option<Admission>; 2],
     flight: Option<Flight>,
     wake: Option<Wake>,
@@ -211,6 +210,7 @@ where
         port: P,
         clock: C,
         validate: A,
+        authority: LocalAuthority,
         run: AppRunId,
         interaction: InteractionId,
     ) -> Result<Self> {
@@ -221,6 +221,7 @@ where
             emergency: None,
             clock,
             validate,
+            authority,
             admissions: [None, None],
             flight: None,
             wake: None,
@@ -297,8 +298,7 @@ where
     }
 
     /// Starts only the current active logical job, on an explicit coordinator
-    /// turn. Native preparation is synchronous. The port has no hook to recheck
-    /// outside authorization immediately before its final speak call.
+    /// turn. The borrowed final check follows the exact flight to dispatch.
     fn submit(&mut self) -> Result<Notice> {
         self.check_open()?;
         let now = self.clock.now();
@@ -313,22 +313,29 @@ where
             .ok_or(Error::Protocol)?;
         let binding = job.callback.clone();
         let native_flight = self.output_scope.bind(binding.identity, binding.operation);
-        if let Some(latch) = &self.emergency {
-            SubmissionStopCheck {
-                latch,
-                expected: &native_flight,
-            }
-            .check_stop(&native_flight)
+        let latch = self.emergency.as_deref().ok_or(Error::Unauthorized)?;
+        let stop = SubmissionStopCheck {
+            latch,
+            expected: &native_flight,
+        };
+        stop.check_stop(&native_flight)
             .map_err(|_| Error::Unauthorized)?;
-        }
+        let check = SubmissionCheck::new(
+            &native_flight,
+            &self.authority,
+            &latch.revoked,
+            &now,
+            [&job.output_deadline, &job.grant_deadline],
+        );
 
         self.cleanup = Cleanup::Unresolved;
         let notice = match self.port.request(
-            native_flight,
+            native_flight.clone(),
             admission.sequence,
             &job.text,
             &admission.voice,
             &admission.admitted,
+            check,
         ) {
             Ok(notice) => notice,
             Err(error) => return Err(self.fail(Error::Native(error))),
@@ -704,7 +711,6 @@ mod macos {
         CFRunLoopTimerInvalidate, CFRunLoopTimerRef,
     };
     use objc2::MainThreadMarker;
-    use std::cell::RefCell;
     use std::ffi::c_void;
     use std::marker::PhantomData;
     use std::panic::{catch_unwind, AssertUnwindSafe};
@@ -1099,6 +1105,7 @@ mod macos {
             self: &Rc<Self>,
             session: ContractIdentity,
             validate: A,
+            authority: LocalAuthority,
             open_port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
         ) -> Result<DriverHandle<Driver<ManagedOutput<C, S>, C, A, S>>>
         where
@@ -1141,6 +1148,7 @@ mod macos {
                     managed,
                     self.clock.clone(),
                     validate,
+                    authority,
                     self.run,
                     session.interaction_id,
                 )?;
@@ -1329,6 +1337,7 @@ mod macos {
             text: &str,
             voice: &VoiceId,
             admitted: &MonotonicTime,
+            check: SubmissionCheck<'_>,
         ) -> native_speech::Result<Notice> {
             let port = self.port.as_mut().ok_or(native_speech::Error::Closed)?;
             if !self.scope.accepts(&binding) {
@@ -1357,7 +1366,8 @@ mod macos {
                 }
                 *obligation = Some(binding.clone());
             }
-            let result = port.request(binding, sequence, text, voice, admitted);
+            let check = check.with_obligation(&self.owner.obligation);
+            let result = port.request(binding, sequence, text, voice, admitted, check);
             if matches!(
                 result,
                 Ok(Notice {
@@ -1464,6 +1474,7 @@ mod macos {
         main: MainThreadMarker,
         session: ContractIdentity,
         validate: A,
+        authority: LocalAuthority,
     ) -> Result<
         DriverHandle<Driver<ManagedOutput<SharedClock, MainRunLoop>, SharedClock, A, MainRunLoop>>,
     >
@@ -1489,7 +1500,7 @@ mod macos {
             })
             .map_err(|_| Error::Scheduler)??;
         let clock = owner.clock.clone();
-        owner.open_driver(session, validate, |scope| {
+        owner.open_driver(session, validate, authority, |scope| {
             let port = native_speech::open(main, clock, scope).map_err(Error::Native)?;
             Ok(Box::new(port))
         })
@@ -1499,7 +1510,7 @@ mod macos {
     fn main_driver_links_without_installing_timers_or_opening_the_port() {
         type Link = fn(MainThreadMarker, ContractIdentity, VoiceId) -> Result<()>;
         let entry: Link = |main, identity, voice| {
-            let driver = open(main, identity, |_| None)?;
+            let driver = open(main, identity, |_| None, Default::default())?;
             let emergency = driver.emergency_stop().ok_or(Error::Protocol)?;
             Driver::turn(&driver, |coordinator| {
                 coordinator.admit(identity, 1, String::new(), voice)
