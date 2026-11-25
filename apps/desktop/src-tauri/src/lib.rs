@@ -6,6 +6,8 @@ mod jarvis;
 mod memory;
 mod snapshot;
 mod voice;
+#[cfg(test)]
+mod voice_conversation;
 use snapshot::actions::{Action, ActionState};
 
 #[tauri::command(rename_all = "snake_case")]
