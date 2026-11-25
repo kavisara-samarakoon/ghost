@@ -1483,8 +1483,16 @@ def test_lifecycle_name_collisions_preserve_existing_artifacts_and_block_replay(
     result = runner.invoke(app, ["request", "apply", REQUEST_ID], input=f"APPLY {REQUEST_ID}\n")
     assert result.exit_code == 1
     assert "Do not retry automatically" in result.output
+    after = collision.stat()
+    # Read access can update atime, so compare stable metadata before reading.
+    assert (
+        after.st_dev, after.st_ino, after.st_mode, after.st_nlink,
+        after.st_uid, after.st_gid, after.st_size, after.st_mtime_ns, after.st_ctime_ns,
+    ) == (
+        before.st_dev, before.st_ino, before.st_mode, before.st_nlink,
+        before.st_uid, before.st_gid, before.st_size, before.st_mtime_ns, before.st_ctime_ns,
+    )
     assert collision.read_text() == "existing lifecycle artifact"
-    assert collision.stat() == before
     expected_calls = 0 if directory == request_execution.CLAIMS else 1
     assert workflow_spies["create_next_summary"].call_count == expected_calls
     if directory == request_execution.CLAIMS:
