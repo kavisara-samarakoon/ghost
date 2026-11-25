@@ -2164,3 +2164,37 @@ fn modeled_output_guard_is_host_bound_and_leaves_other_resources_independent() {
         Err(Error::Stale)
     ));
 }
+
+#[test]
+fn modeled_route_restoration_changes_availability_without_renewing_cleanup() {
+    let clock = ManualClock::new();
+    let id = binding();
+    let (host, ack) = SpeechLifecycleHost::synthetic_with_output_resolver(
+        id.run,
+        id.host.0,
+        id.os_session.0,
+        id.generation,
+        clock.now(),
+    );
+    assert!(host.apply_speech_event(SpeechLifecycleEvent::PermissionRestored, &clock.now()));
+    assert!(host.apply_speech_event(SpeechLifecycleEvent::RouteUnknown, &clock.now()));
+    let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+    host.while_busy(|| assert_eq!(host.restore_modeled_route(&clock.now()), Err(Error::Busy)));
+    host.restore_modeled_route(&clock.now()).unwrap();
+    assert!(host.model.borrow().device_available);
+    assert!(host.model.borrow().authorization.is_none());
+    assert!(!host.admission_available());
+    assert!(host
+        .output_cleanup_ticket()
+        .unwrap()
+        .unwrap()
+        .matches(&ticket));
+    host.prepare_output_ack(&ack, &ticket).unwrap().commit();
+    host.acknowledge_independent_cleanup(&ticket, IndependentCleanup::Workers, true)
+        .unwrap();
+    assert!(!host.admission_available());
+    host.acknowledge_independent_cleanup(&ticket, IndependentCleanup::Content, true)
+        .unwrap();
+    assert!(host.admission_available());
+    assert!(host.model.borrow().authorization.is_none());
+}

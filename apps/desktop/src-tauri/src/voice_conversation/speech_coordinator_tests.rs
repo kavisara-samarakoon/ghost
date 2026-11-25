@@ -1347,7 +1347,9 @@ mod native_driver_ownership {
     }
 
     use super::super::macos::{LifecycleIngress, LifecycleReceipt, ManagedOutput};
-    use crate::voice_conversation::host::{SpeechLifecycleEvent as Life, SpeechLifecycleHost};
+    use crate::voice_conversation::host::{
+        IndependentCleanup, SpeechLifecycleEvent as Life, SpeechLifecycleHost,
+    };
     use crate::voice_conversation::native_speech::RetirementOutput;
     use std::num::NonZeroU64;
 
@@ -1376,6 +1378,7 @@ mod native_driver_ownership {
             scheduler.clone(),
             Some(host.clone()),
         );
+        enable(&owner, identity(1));
         (owner, host)
     }
 
@@ -1398,6 +1401,23 @@ mod native_driver_ownership {
             })
         });
         owner.open_driver(session, validate, authority, port)
+    }
+
+    fn enable(owner: &ModeledOwner, session: ContractIdentity) {
+        let preview = owner
+            .prepare_modeled_enable(session, Duration::from_secs(300))
+            .unwrap();
+        owner.confirm_modeled_enable(&preview).unwrap();
+    }
+
+    fn report_workers_and_content(
+        host: &SpeechLifecycleHost,
+        ticket: &crate::voice_conversation::host::CleanupTicket,
+    ) {
+        host.acknowledge_independent_cleanup(ticket, IndependentCleanup::Workers, true)
+            .unwrap();
+        host.acknowledge_independent_cleanup(ticket, IndependentCleanup::Content, true)
+            .unwrap();
     }
 
     fn record(ingress: &LifecycleIngress, event: Life) {
@@ -1454,7 +1474,7 @@ mod native_driver_ownership {
     fn lifecycle_receipts_reject_foreign_replay_and_stale_replacement_scopes() {
         let clock = Clock::new();
         let scheduler = FakeScheduler::default();
-        let (owner, _) = lifecycle_owner(&clock, &scheduler);
+        let (owner, host, _) = release_owner(&clock, &scheduler);
         let (foreign_owner, _) = lifecycle_owner(&clock, &scheduler);
         let open = |owner: &Rc<ModeledOwner>, session: ContractIdentity, authority| {
             open_modeled(owner, &clock, session, authority, |scope| {
@@ -1470,11 +1490,16 @@ mod native_driver_ownership {
         let old = driver.lifecycle().unwrap();
         assert_eq!(old.record(&foreign), Err(Error::Unauthorized));
         let pending = old.issue(Life::Reopen).unwrap();
-        let late = old.issue(Life::ConsentLost).unwrap();
-        assert_eq!(old.record(&late), Err(Error::Unauthorized));
+        let stop = old.issue(Life::Stop).unwrap();
+        assert_eq!(old.record(&stop), Err(Error::Unauthorized));
         old.record(&pending).unwrap();
         assert_eq!(old.record(&pending), Err(Error::Unauthorized));
+        old.record(&stop).unwrap();
+        let late = old.issue(Life::ConsentLost).unwrap();
         drop(driver);
+        let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+        owner.resolve_output(&ticket, None).unwrap();
+        report_workers_and_content(&host, &ticket);
         let reused = open_modeled(
             &foreign_owner,
             &clock,
@@ -1491,6 +1516,7 @@ mod native_driver_ownership {
         let fresh = managed_authority(&clock);
         fresh.borrow_mut().scope = Some(next);
         fresh.borrow_mut().grants[0].as_mut().unwrap().identity = next;
+        enable(&owner, next);
         let successor = open(&owner, next, fresh.clone());
         assert!(old_authority.borrow().scope.is_none());
         assert_eq!(old.record(&late), Err(Error::Unauthorized));
@@ -1706,6 +1732,20 @@ mod native_driver_ownership {
         Rc<SpeechLifecycleHost>,
         ModeledReleaseIssuer,
     ) {
+        let parts = release_owner_on_route(clock, scheduler, identity(1).generation);
+        enable(&parts.0, identity(1));
+        parts
+    }
+
+    fn release_owner_on_route(
+        clock: &Clock,
+        scheduler: &FakeScheduler,
+        route: Generation,
+    ) -> (
+        Rc<ModeledOwner>,
+        Rc<SpeechLifecycleHost>,
+        ModeledReleaseIssuer,
+    ) {
         let id = identity(1);
         let one = NonZeroU64::new(1).unwrap();
         let (host, ack) = SpeechLifecycleHost::synthetic_with_output_resolver(
@@ -1720,7 +1760,7 @@ mod native_driver_ownership {
         let issuer = ModeledReleaseIssuer::default();
         let owner = CleanupOwner::with_release_issuer(
             id.app_run_id,
-            id.generation,
+            route,
             clock.clone(),
             scheduler.clone(),
             (host.clone(), ack),
@@ -1979,7 +2019,10 @@ mod native_driver_ownership {
             coordinator.submit()
         })
         .unwrap();
-        record(&driver.lifecycle().unwrap(), Life::Stop);
+        let ingress = driver.lifecycle().unwrap();
+        record(&ingress, Life::Stop);
+        record(&ingress, Life::RouteChanged);
+        record(&ingress, Life::RouteRestored);
         drop(driver);
         clock.advance(POLL_INTERVAL * MAX_STOP_POLLS as u32);
         scheduler.fire();
@@ -1996,6 +2039,566 @@ mod native_driver_ownership {
         );
         assert!(!host.output_acknowledged());
         assert_cleanup_owner_busy(&owner);
+        assert_modeled_open_blocked(&owner, &clock, next_session(identity(1)), Error::Busy);
+    }
+
+    fn authorized_scope(clock: &Clock, session: ContractIdentity) -> LocalAuthority {
+        let authority = managed_authority(clock);
+        authority.borrow_mut().scope = Some(session);
+        authority.borrow_mut().grants[0].as_mut().unwrap().identity = session;
+        authority
+    }
+
+    fn next_session(old: ContractIdentity) -> ContractIdentity {
+        ContractIdentity {
+            generation: old.generation.checked_next().unwrap(),
+            configuration_revision: old.configuration_revision.checked_next().unwrap(),
+            ..old
+        }
+    }
+
+    fn open_idle(
+        owner: &Rc<ModeledOwner>,
+        clock: &Clock,
+        session: ContractIdentity,
+    ) -> ModeledDriver {
+        open_modeled(
+            owner,
+            clock,
+            session,
+            authorized_scope(clock, session),
+            |scope| Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0),
+        )
+        .unwrap()
+    }
+
+    fn assert_modeled_open_blocked(
+        owner: &Rc<ModeledOwner>,
+        clock: &Clock,
+        session: ContractIdentity,
+        expected: Error,
+    ) {
+        let result = open_modeled(
+            owner,
+            clock,
+            session,
+            authorized_scope(clock, session),
+            |_| panic!("blocked recovery must not reach the factory"),
+        );
+        assert!(matches!(result, Err(error) if error == expected));
+    }
+
+    fn idle_route_loss_and_restore(
+        driver: ModeledDriver,
+        owner: &Rc<ModeledOwner>,
+        host: &SpeechLifecycleHost,
+    ) -> (
+        LifecycleIngress,
+        crate::voice_conversation::host::CleanupTicket,
+    ) {
+        let ingress = driver.lifecycle().unwrap();
+        record(&ingress, Life::RouteUnknown);
+        record(&ingress, Life::RouteRestored);
+        drop(driver);
+        let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+        owner.resolve_output(&ticket, None).unwrap();
+        report_workers_and_content(host, &ticket);
+        (ingress, ticket)
+    }
+
+    #[test]
+    fn consecutive_idle_recoveries_renew_route_epoch_authority_and_cleanup_ticket() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let mut session = identity(1);
+        let mut driver = open_idle(&owner, &clock, session);
+        let mut previous_ticket = None;
+        for _ in 0..2 {
+            let old_scope = owner.modeled_scope();
+            let old = driver.lifecycle().unwrap();
+            let loss = old.issue(Life::RouteChanged).unwrap();
+            let recovery = old.issue(Life::RouteRestored).unwrap();
+            assert_eq!(old.record(&recovery), Err(Error::Unauthorized));
+            old.record(&loss).unwrap();
+            old.record(&recovery).unwrap();
+            assert_eq!(old.record(&recovery), Err(Error::Unauthorized));
+            drop(driver);
+            let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+            if let Some(previous) = previous_ticket.as_ref() {
+                assert!(!ticket.matches(previous));
+                assert_eq!(
+                    owner.resolve_output(previous, None),
+                    Err(Error::Unauthorized)
+                );
+                assert_eq!(
+                    host.acknowledge_independent_cleanup(
+                        previous,
+                        IndependentCleanup::Content,
+                        true
+                    ),
+                    Err(crate::voice_conversation::host::Error::Stale)
+                );
+            }
+            assert!(!host.output_acknowledged());
+            owner.resolve_output(&ticket, None).unwrap();
+            session = next_session(session);
+            assert!(matches!(
+                owner.prepare_modeled_enable(session, Duration::from_secs(60)),
+                Err(Error::Closed)
+            ));
+            report_workers_and_content(&host, &ticket);
+            assert_modeled_open_blocked(&owner, &clock, session, Error::Unauthorized);
+            assert_eq!(owner.modeled_scope().generations(), old_scope.generations());
+            enable(&owner, session);
+            let stale = old.issue(Life::RouteUnknown).unwrap();
+            driver = open_idle(&owner, &clock, session);
+            let (old_epoch, old_route) = old_scope.generations();
+            assert_eq!(
+                owner.modeled_scope().generations(),
+                (
+                    old_epoch.checked_next().unwrap(),
+                    old_route.checked_next().unwrap()
+                )
+            );
+            assert_eq!(old.record(&stale), Err(Error::Unauthorized));
+            assert_eq!(
+                driver.lifecycle().unwrap().record(&stale),
+                Err(Error::Unauthorized)
+            );
+            previous_ticket = Some(ticket);
+        }
+    }
+
+    #[test]
+    fn recovered_route_waits_for_never_and_possibly_submitted_accounting() {
+        for attempted in [false, true] {
+            let clock = Clock::new();
+            let scheduler = FakeScheduler::default();
+            let (owner, host, issuer) = release_owner(&clock, &scheduler);
+            let hook = Rc::new(RefCell::new(None::<LifecycleIngress>));
+            let during = hook.clone();
+            let mut cancel = None;
+            let driver = open_modeled(
+                &owner,
+                &clock,
+                identity(1),
+                managed_authority(&clock),
+                |scope| {
+                    if attempted {
+                        let (port, callback, _) =
+                            native_speech::retirement_fixture(scope, clock.clone(), voice(), || {});
+                        cancel = Some(callback);
+                        Ok(port)
+                    } else {
+                        Ok(native_speech::preparation_fixture(
+                            scope,
+                            clock.clone(),
+                            voice(),
+                            move || {
+                                record(during.borrow().as_ref().unwrap(), Life::RouteChanged);
+                            },
+                        )
+                        .0)
+                    }
+                },
+            )
+            .unwrap();
+            let ingress = driver.lifecycle().unwrap();
+            *hook.borrow_mut() = Some(ingress.clone());
+            let result = Driver::turn(&driver, |coordinator| {
+                coordinator.admit(identity(1), 1, "Synthetic".into(), voice())?;
+                coordinator.submit()
+            });
+            if attempted {
+                assert!(result.is_ok());
+                record(&ingress, Life::RouteChanged);
+            } else {
+                assert_eq!(
+                    result,
+                    Err(Error::Native(native_speech::Error::Unauthorized))
+                );
+            }
+            record(&ingress, Life::RouteRestored);
+            drop(driver);
+            if let Some(cancel) = cancel {
+                cancel();
+                scheduler.fire();
+            }
+            let before = owner.modeled_scope().generations();
+            let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+            let next = next_session(identity(1));
+            assert_modeled_open_blocked(&owner, &clock, next, Error::Busy);
+            let modeled = if attempted {
+                let challenge = owner.release_challenge().unwrap();
+                assert_eq!(
+                    owner.resolve_output(&ticket, None),
+                    Err(Error::Unauthorized)
+                );
+                Some(issuer.issue(Assertion::Released, challenge).unwrap())
+            } else {
+                None
+            };
+            owner.resolve_output(&ticket, modeled.as_ref()).unwrap();
+            report_workers_and_content(&host, &ticket);
+            assert!(matches!(
+                owner.prepare_modeled_enable(next, Duration::from_secs(60)),
+                Err(Error::Busy)
+            ));
+            assert_eq!(
+                owner.take_report().unwrap().can_abandon_unsubmitted(),
+                !attempted
+            );
+            assert_eq!(owner.modeled_scope().generations(), before);
+            enable(&owner, next);
+            let successor = open_idle(&owner, &clock, next);
+            if let Some(modeled) = &modeled {
+                assert!(modeled.was_consumed());
+                assert_eq!(
+                    owner.resolve_output(&ticket, Some(modeled)),
+                    Err(Error::Unauthorized)
+                );
+            }
+            drop(successor);
+        }
+    }
+
+    #[test]
+    fn subsequent_route_loss_supersedes_queued_recovery() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let driver = open_idle(&owner, &clock, identity(1));
+        let ingress = driver.lifecycle().unwrap();
+        host.while_busy(|| {
+            record(&ingress, Life::RouteUnknown);
+            record(&ingress, Life::RouteRestored);
+            record(&ingress, Life::RouteChanged);
+            ingress.service_host(&clock.now());
+        });
+        drop(driver);
+        let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+        owner.resolve_output(&ticket, None).unwrap();
+        report_workers_and_content(&host, &ticket);
+        let next = next_session(identity(1));
+        assert_modeled_open_blocked(&owner, &clock, next, Error::Closed);
+
+        record(&ingress, Life::RouteRestored);
+        enable(&owner, next);
+        assert!(open_modeled(
+            &owner,
+            &clock,
+            next,
+            authorized_scope(&clock, next),
+            |scope| {
+                Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+            }
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn recovered_route_respects_all_pending_privacy_and_permanent_barriers() {
+        for (barrier, available, expected) in [
+            (Life::Stop, None, Error::Unauthorized),
+            (Life::Lock, Some(Life::Unlock), Error::Closed),
+            (Life::Sleep, Some(Life::Wake), Error::Closed),
+            (
+                Life::PermissionLost,
+                Some(Life::PermissionRestored),
+                Error::Closed,
+            ),
+            (Life::Quit, None, Error::Closed),
+            (Life::Terminated, None, Error::Closed),
+            (Life::ObserverLost, None, Error::Closed),
+        ] {
+            let clock = Clock::new();
+            let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+            let driver = open_idle(&owner, &clock, identity(1));
+            let ingress = driver.lifecycle().unwrap();
+            record(&ingress, Life::RouteChanged);
+            record(&ingress, Life::RouteRestored);
+            record(&ingress, barrier);
+            drop(driver);
+            let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+            owner.resolve_output(&ticket, None).unwrap();
+            report_workers_and_content(&host, &ticket);
+            let next = next_session(identity(1));
+            assert_modeled_open_blocked(&owner, &clock, next, expected);
+            if let Some(available) = available {
+                record(&ingress, available);
+                enable(&owner, next);
+                drop(open_idle(&owner, &clock, next));
+            } else if barrier == Life::Stop {
+                enable(&owner, next);
+                drop(open_idle(&owner, &clock, next));
+            } else {
+                record(&ingress, Life::RouteRestored);
+                assert_modeled_open_blocked(&owner, &clock, next, Error::Closed);
+            }
+        }
+    }
+
+    #[test]
+    fn recovered_admission_retries_factory_failure_and_rechecks_reentrant_loss() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let driver = open_idle(&owner, &clock, identity(1));
+        let (ingress, old_ticket) = idle_route_loss_and_restore(driver, &owner, &host);
+        let next = next_session(identity(1));
+        enable(&owner, next);
+        let initial = owner.modeled_scope().generations();
+        let mut first_candidate = None;
+        let failed = open_modeled(
+            &owner,
+            &clock,
+            next,
+            authorized_scope(&clock, next),
+            |scope| {
+                first_candidate = Some(scope.generations());
+                assert_modeled_open_blocked(&owner, &clock, next, Error::Busy);
+                Err(Error::Native(native_speech::Error::BackendUnavailable))
+            },
+        );
+        assert!(matches!(
+            failed,
+            Err(Error::Native(native_speech::Error::BackendUnavailable))
+        ));
+        let (burned, tentative_route) = first_candidate.unwrap();
+        assert_eq!(owner.modeled_scope().generations(), (burned, initial.1));
+        assert_eq!(tentative_route, initial.1.checked_next().unwrap());
+
+        let interrupted = open_modeled(
+            &owner,
+            &clock,
+            next,
+            authorized_scope(&clock, next),
+            |scope| {
+                assert_eq!(scope.generations().0, burned.checked_next().unwrap());
+                record(&ingress, Life::RouteChanged);
+                record(&ingress, Life::RouteRestored);
+                Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+            },
+        );
+        assert!(matches!(interrupted, Err(Error::Unauthorized)));
+        assert_eq!(owner.modeled_scope().generations().1, initial.1);
+        assert!(host
+            .output_cleanup_ticket()
+            .unwrap()
+            .unwrap()
+            .matches(&old_ticket));
+        enable(&owner, next);
+        drop(open_idle(&owner, &clock, next));
+        assert_eq!(owner.modeled_scope().generations().1, tentative_route);
+    }
+
+    #[test]
+    fn route_and_epoch_exhaustion_fail_permanently_before_factory() {
+        for route_overflow in [false, true] {
+            let clock = Clock::new();
+            let route = Generation::from_native_sequence(if route_overflow { u64::MAX } else { 1 })
+                .unwrap();
+            let (owner, host, _) = release_owner_on_route(&clock, &FakeScheduler::default(), route);
+            enable(&owner, identity(1));
+            let session = if route_overflow {
+                let driver = open_idle(&owner, &clock, identity(1));
+                idle_route_loss_and_restore(driver, &owner, &host);
+                let next = next_session(identity(1));
+                enable(&owner, next);
+                next
+            } else {
+                owner.exhaust_modeled_epoch();
+                identity(1)
+            };
+            let before = owner.modeled_scope().generations();
+            assert_modeled_open_blocked(
+                &owner,
+                &clock,
+                session,
+                Error::Native(native_speech::Error::Contract(ContractError::Overflow)),
+            );
+            assert_eq!(owner.modeled_scope().generations(), before);
+            assert_modeled_open_blocked(&owner, &clock, session, Error::Closed);
+        }
+    }
+
+    #[test]
+    fn recovered_route_denies_sticky_fault_even_after_modeled_cleanup() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let driver = open_idle(&owner, &clock, identity(1));
+        let ingress = driver.lifecycle().unwrap();
+        record(&ingress, Life::RouteChanged);
+        record(&ingress, Life::RouteRestored);
+        for _ in 0..6 {
+            record(&ingress, Life::Reopen);
+        }
+        assert_eq!(
+            ingress.record(&ingress.issue(Life::RouteRestored).unwrap()),
+            Err(Error::Busy)
+        );
+        assert!(matches!(
+            ingress.issue(Life::RouteRestored),
+            Err(Error::Closed)
+        ));
+        drop(driver);
+        let ticket = host.output_cleanup_ticket().unwrap().unwrap();
+        owner.resolve_output(&ticket, None).unwrap();
+        report_workers_and_content(&host, &ticket);
+        assert_modeled_open_blocked(&owner, &clock, next_session(identity(1)), Error::Closed);
+    }
+
+    #[test]
+    fn recovery_confirmation_is_bound_expires_and_caps_native_dispatch() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let (foreign, _, _) =
+            release_owner_on_route(&clock, &FakeScheduler::default(), identity(1).generation);
+        let driver = open_idle(&owner, &clock, identity(1));
+        let (ingress, ticket) = idle_route_loss_and_restore(driver, &owner, &host);
+        let next = next_session(identity(1));
+        let preview = owner
+            .prepare_modeled_enable(next, Duration::from_secs(1))
+            .unwrap();
+        assert_eq!(
+            foreign.confirm_modeled_enable(&preview),
+            Err(Error::Unauthorized)
+        );
+        // Even an otherwise harmless newer observation changes the preview lineage.
+        record(&ingress, Life::Reopen);
+        assert_eq!(
+            owner.confirm_modeled_enable(&preview),
+            Err(Error::Unauthorized)
+        );
+        let preview = owner
+            .prepare_modeled_enable(next, Duration::from_secs(1))
+            .unwrap();
+        owner.confirm_modeled_enable(&preview).unwrap();
+        assert_eq!(
+            owner.confirm_modeled_enable(&preview),
+            Err(Error::Unauthorized)
+        );
+        clock.advance(Duration::from_secs(1));
+        assert_modeled_open_blocked(&owner, &clock, next, Error::Unauthorized);
+        assert!(host
+            .output_cleanup_ticket()
+            .unwrap()
+            .unwrap()
+            .matches(&ticket));
+
+        let preview = owner
+            .prepare_modeled_enable(next, Duration::from_secs(1))
+            .unwrap();
+        owner.confirm_modeled_enable(&preview).unwrap();
+        let mut calls = None;
+        let driver = open_modeled(
+            &owner,
+            &clock,
+            next,
+            authorized_scope(&clock, next),
+            |scope| {
+                let at_attach = clock.clone();
+                let (port, count) =
+                    native_speech::preparation_fixture(scope, clock.clone(), voice(), move || {
+                        at_attach.advance(Duration::from_secs(1));
+                    });
+                calls = Some(count);
+                Ok(port)
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            Driver::turn(&driver, |coordinator| {
+                coordinator.admit(next, 1, "Synthetic".into(), voice())?;
+                coordinator.submit()
+            }),
+            Err(Error::Native(native_speech::Error::Deadline))
+        );
+        assert_eq!(calls.unwrap().get(), 0);
+        assert!(owner.take_report().unwrap().can_abandon_unsubmitted());
+    }
+
+    #[test]
+    fn recovered_admission_busy_host_and_reentrant_clock_preserve_authorization_safety() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let driver = open_idle(&owner, &clock, identity(1));
+        let (ingress, _) = idle_route_loss_and_restore(driver, &owner, &host);
+        let next = next_session(identity(1));
+        let preview = owner
+            .prepare_modeled_enable(next, Duration::from_secs(60))
+            .unwrap();
+        host.while_busy(|| assert_eq!(owner.confirm_modeled_enable(&preview), Err(Error::Busy)));
+        owner.confirm_modeled_enable(&preview).unwrap();
+        let before = owner.modeled_scope().generations();
+        host.while_busy(|| assert_modeled_open_blocked(&owner, &clock, next, Error::Busy));
+        assert_eq!(owner.modeled_scope().generations(), before);
+        let authority = authorized_scope(&clock, next);
+        clock
+            .on_read
+            .replace(Some(Box::new(move || record(&ingress, Life::Stop))));
+        let reentered = open_modeled(&owner, &clock, next, authority, |_| {
+            panic!("Stop in the admission clock read must deny before factory")
+        });
+        assert!(matches!(reentered, Err(Error::Unauthorized)));
+        assert_eq!(owner.modeled_scope().generations(), before);
+        enable(&owner, next);
+        drop(open_idle(&owner, &clock, next));
+    }
+
+    #[test]
+    fn recovery_rechecks_clock_and_local_scope_before_committing_candidate() {
+        let clock = Clock::new();
+        let (owner, host, _) = release_owner(&clock, &FakeScheduler::default());
+        let driver = open_idle(&owner, &clock, identity(1));
+        idle_route_loss_and_restore(driver, &owner, &host);
+        let next = next_session(identity(1));
+        clock.advance(Duration::from_secs(1));
+        let preview = owner
+            .prepare_modeled_enable(next, Duration::from_secs(60))
+            .unwrap();
+        let earlier = clock.now();
+        clock.advance(Duration::from_secs(1));
+        let confirmed = clock.now();
+        owner.confirm_modeled_enable(&preview).unwrap();
+        clock.time.replace(earlier.clone());
+        assert_modeled_open_blocked(
+            &owner,
+            &clock,
+            next,
+            Error::Contract(ContractError::TimeReversed),
+        );
+        clock.time.replace(confirmed.clone());
+
+        let wrong = managed_authority(&clock);
+        let rejected = open_modeled(&owner, &clock, next, wrong, |_| {
+            panic!("wrong local scope must deny before factory")
+        });
+        assert!(matches!(rejected, Err(Error::Unauthorized)));
+
+        let (epoch, route) = owner.modeled_scope().generations();
+        let failed = open_modeled(
+            &owner,
+            &clock,
+            next,
+            authorized_scope(&clock, next),
+            |scope| {
+                clock.time.replace(earlier.clone());
+                Ok(native_speech::retirement_fixture(scope, clock.clone(), voice(), || {}).0)
+            },
+        );
+        assert!(matches!(
+            failed,
+            Err(Error::Contract(ContractError::TimeReversed))
+        ));
+        assert_eq!(
+            owner.modeled_scope().generations(),
+            (epoch.checked_next().unwrap(), route)
+        );
+        clock.time.replace(confirmed);
+        drop(open_idle(&owner, &clock, next));
+        assert_eq!(
+            owner.modeled_scope().generations().1,
+            route.checked_next().unwrap()
+        );
     }
 
     fn managed_authority(clock: &Clock) -> LocalAuthority {

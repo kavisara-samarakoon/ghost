@@ -10,7 +10,9 @@
 //! both slots, clocks, sequences, renderer, provider and network availability.
 use super::clock::{Deadline, MonotonicTime};
 use super::limits::{MAX_CAPTURED_TURN, MAX_CLOUD_INTERACTION, MAX_WAKE_ARMING};
-use super::model::{AppRunId, Generation, MicrophoneOwner, MicrophoneReleaseStatus};
+use super::model::{
+    AppRunId, ContractIdentity, Generation, MicrophoneOwner, MicrophoneReleaseStatus,
+};
 use super::ContractError;
 use std::num::NonZeroU64;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -761,6 +763,16 @@ impl HostModel {
         preview: &EnablePreview,
         now: &MonotonicTime,
     ) -> Result<()> {
+        self.enable_replacing(control, preview, now, None)
+    }
+
+    fn enable_replacing(
+        &mut self,
+        control: &NativeControl,
+        preview: &EnablePreview,
+        now: &MonotonicTime,
+        previous_live: Option<&std::cell::Cell<bool>>,
+    ) -> Result<()> {
         self.check_control(control)?;
         let pending = self.pending_enable.take().ok_or(Error::Stale)?;
         if !Arc::ptr_eq(&pending.0, &preview.0) || preview.0.stamp.epoch != self.epoch {
@@ -775,8 +787,14 @@ impl HostModel {
         {
             return Err(Error::Unauthorized);
         }
+        let cleanup_seed = CleanupTicket(self.stamp()?);
+        // Nothing fallible remains. Retire the old lifecycle controls before
+        // the successor authorization or cleanup identity becomes active.
+        if let Some(previous) = previous_live {
+            previous.set(false);
+        }
         self.cleanup = None;
-        self.cleanup_seed = CleanupTicket(self.stamp()?);
+        self.cleanup_seed = cleanup_seed;
         self.authorization = Some(Authorization {
             preview: preview.clone(),
             alive: Arc::new(AtomicBool::new(true)),
@@ -1010,6 +1028,7 @@ pub(super) enum SpeechLifecycleEvent {
     ScopeReplaced,
     RouteChanged,
     RouteUnknown,
+    RouteRestored,
     ObserverLost,
     Close,
     Reopen,
@@ -1030,15 +1049,16 @@ impl SpeechLifecycleEvent {
         // This slice has no independent background speech issuer.
         !matches!(
             self,
-            Self::Reopen | Self::Wake | Self::Unlock | Self::PermissionRestored
+            Self::Reopen
+                | Self::Wake
+                | Self::Unlock
+                | Self::PermissionRestored
+                | Self::RouteRestored
         )
     }
 
     pub(super) fn loses_route(self) -> bool {
-        matches!(
-            self,
-            Self::RouteChanged | Self::RouteUnknown | Self::ObserverLost
-        )
+        matches!(self, Self::RouteChanged | Self::RouteUnknown)
     }
 
     pub(super) fn quits(self) -> bool {
@@ -1053,6 +1073,19 @@ pub(super) struct SpeechLifecycleHost {
     model: std::cell::RefCell<HostModel>,
     control: NativeControl,
     output_resolver: Option<std::rc::Rc<()>>,
+    speech_enable: std::cell::Cell<Option<ContractIdentity>>,
+}
+
+#[derive(Clone)]
+pub(super) struct SpeechEnablePreview {
+    preview: EnablePreview,
+    session: ContractIdentity,
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum IndependentCleanup {
+    Workers,
+    Content,
 }
 
 pub(super) struct OutputAckAuthority(std::rc::Rc<()>);
@@ -1087,6 +1120,7 @@ impl SpeechLifecycleHost {
             model: std::cell::RefCell::new(model),
             control,
             output_resolver: None,
+            speech_enable: std::cell::Cell::new(None),
         }
     }
 
@@ -1151,13 +1185,132 @@ impl SpeechLifecycleHost {
             .is_some_and(|cleanup| cleanup.acknowledged[Resource::Output as usize])
     }
 
+    /// Synthetic route availability is independent of voice consent and
+    /// outstanding cleanup. Only the authenticated route reducer calls this.
+    pub(super) fn restore_modeled_route(&self, now: &MonotonicTime) -> Result<()> {
+        let mut host = self.model.try_borrow_mut().map_err(|_| Error::Busy)?;
+        host.observe(now)?;
+        if host.faulted || host.logged_out || host.application != Application::Running {
+            return Err(Error::Closed);
+        }
+        host.device_available = true;
+        Ok(())
+    }
+
+    pub(super) fn prepare_speech_enable(
+        &self,
+        session: ContractIdentity,
+        lifetime: Duration,
+        now: &MonotonicTime,
+    ) -> Result<SpeechEnablePreview> {
+        let mut host = self.model.try_borrow_mut().map_err(|_| Error::Busy)?;
+        if session.app_run_id != self.run() || host.window != Window::Visible || !host.foreground {
+            return Err(Error::Unauthorized);
+        }
+        host.observe(now)?;
+        if let Some(pending) = &host.pending_enable {
+            if pending.0.deadline.is_expired(now)?
+                || pending.0.confirmation_deadline.is_expired(now)?
+            {
+                host.pending_enable = None;
+            }
+        }
+        let scope = Scope {
+            microphone: true,
+            manual: false,
+            wake: false,
+            conversation: true,
+            background_wake: false,
+            background_conversation: false,
+        };
+        let preview = host.prepare_enable(scope, lifetime, now)?;
+        Ok(SpeechEnablePreview { preview, session })
+    }
+
+    pub(super) fn validate_speech_enable(
+        &self,
+        receipt: &SpeechEnablePreview,
+        session: ContractIdentity,
+        now: &MonotonicTime,
+    ) -> Result<()> {
+        let host = self.model.try_borrow().map_err(|_| Error::Busy)?;
+        now.checked_duration_since(&host.last_time)?;
+        if !host.privacy_clear()
+            || !host.cleanup_complete()
+            || host.window != Window::Visible
+            || !host.foreground
+        {
+            return Err(Error::Closed);
+        }
+        if receipt.session != session
+            || !host.pending_enable.as_ref().is_some_and(|pending| {
+                Arc::ptr_eq(&pending.0, &receipt.preview.0) && pending.0.stamp.epoch == host.epoch
+            })
+            || receipt.preview.0.deadline.is_expired(now)?
+            || receipt.preview.0.confirmation_deadline.is_expired(now)?
+        {
+            return Err(Error::Unauthorized);
+        }
+        Ok(())
+    }
+
+    pub(super) fn activate_speech_enable(
+        &self,
+        receipt: &SpeechEnablePreview,
+        now: &MonotonicTime,
+        previous_live: Option<&std::cell::Cell<bool>>,
+    ) -> Result<Deadline> {
+        let mut host = self.model.try_borrow_mut().map_err(|_| Error::Busy)?;
+        host.enable_replacing(&self.control, &receipt.preview, now, previous_live)?;
+        self.speech_enable.set(Some(receipt.session));
+        Ok(receipt.preview.0.deadline.clone())
+    }
+
+    pub(super) fn discard_speech_enable(&self, receipt: &SpeechEnablePreview) -> Result<()> {
+        let mut host = self.model.try_borrow_mut().map_err(|_| Error::Busy)?;
+        if host
+            .pending_enable
+            .as_ref()
+            .is_some_and(|pending| Arc::ptr_eq(&pending.0, &receipt.preview.0))
+        {
+            host.pending_enable = None;
+        }
+        Ok(())
+    }
+
+    pub(super) fn acknowledge_independent_cleanup(
+        &self,
+        ticket: &CleanupTicket,
+        resource: IndependentCleanup,
+        success: bool,
+    ) -> Result<()> {
+        let resource = match resource {
+            IndependentCleanup::Workers => Resource::Workers,
+            IndependentCleanup::Content => Resource::Content,
+        };
+        self.model
+            .try_borrow_mut()
+            .map_err(|_| Error::Busy)?
+            .resource_ack(ticket, resource, success)
+    }
+
+    pub(super) fn check_admission_available(&self) -> Result<()> {
+        let host = self.model.try_borrow().map_err(|_| Error::Busy)?;
+        if host.privacy_clear()
+            && host.cleanup_complete()
+            && host.window == Window::Visible
+            && host.foreground
+            && !host.paused
+        {
+            Ok(())
+        } else {
+            Err(Error::Closed)
+        }
+    }
+
+    #[cfg(test)]
     pub(super) fn admission_available(&self) -> bool {
-        self.model.try_borrow().is_ok_and(|host| {
-            host.privacy_clear()
-                && host.cleanup_complete()
-                && host.window == Window::Visible
-                && host.foreground
-        })
+        self.check_admission_available().is_ok()
     }
 
     /// False means the transition is still pending. Other host errors are
@@ -1180,8 +1333,14 @@ impl SpeechLifecycleHost {
                 let _ = host.quit(&self.control);
                 return true;
             }
+            E::ConsentLost | E::ScopeReplaced if self.speech_enable.get().is_some() => {
+                // This wrapper issued a foreground conversation-only grant.
+                let _ = host.stop_listening(&self.control);
+                return true;
+            }
             E::ConsentLost | E::ScopeReplaced => Event::EndConversation,
             E::RouteChanged | E::RouteUnknown => Event::DeviceLost,
+            E::RouteRestored => return false,
             E::ObserverLost => Event::MenuLost,
             E::Close => Event::CloseWindow,
             E::Reopen => Event::ReopenWindow,

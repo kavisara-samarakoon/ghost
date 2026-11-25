@@ -143,6 +143,23 @@ impl OutputScope {
         })
     }
 
+    pub(super) fn next_modeled_route(&self) -> Result<Self> {
+        Ok(Self {
+            route: self.route.checked_next()?,
+            ..self.clone()
+        })
+    }
+
+    #[cfg(test)]
+    pub(super) fn generations(&self) -> (Generation, Generation) {
+        (self.epoch, self.route)
+    }
+
+    #[cfg(test)]
+    pub(super) fn exhaust_epoch(&mut self) {
+        self.epoch = Generation::from_native_sequence(u64::MAX).expect("nonzero");
+    }
+
     pub(super) fn bind(&self, identity: ContractIdentity, operation: u64) -> FlightBinding {
         FlightBinding {
             scope: self.clone(),

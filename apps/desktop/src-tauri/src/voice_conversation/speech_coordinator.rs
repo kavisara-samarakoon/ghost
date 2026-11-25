@@ -198,6 +198,7 @@ struct Coordinator<P: SpeechOutput, C, A> {
     clock: C,
     validate: A,
     authority: LocalAuthority,
+    host_deadline: Option<Deadline>,
     admissions: [Option<Admission>; 2],
     flight: Option<Flight>,
     wake: Option<Wake>,
@@ -237,6 +238,7 @@ where
             clock,
             validate,
             authority,
+            host_deadline: None,
             admissions: [None, None],
             flight: None,
             wake: None,
@@ -265,9 +267,15 @@ where
         Ok(())
     }
 
-    fn validation(&self, identity: ContractIdentity) -> Option<Validation> {
-        (self.validate)(identity)
-            .filter(|value| value.identity == identity && value.allowed(Preparation::Local))
+    fn validation(&self, identity: ContractIdentity, now: &MonotonicTime) -> Option<Validation> {
+        let mut validation = (self.validate)(identity)
+            .filter(|value| value.identity == identity && value.allowed(Preparation::Local))?;
+        if let Some(host) = &self.host_deadline {
+            if host.remaining(now).ok()? < validation.deadline.remaining(now).ok()? {
+                validation.deadline = host.clone();
+            }
+        }
+        Some(validation)
     }
 
     fn admit(
@@ -288,7 +296,7 @@ where
         {
             return Err(Error::Unauthorized);
         }
-        let validation = self.validation(identity);
+        let validation = self.validation(identity, &now);
         self.check_open()?;
         let validation = validation.ok_or(Error::Unauthorized)?;
         // Validate the domain before the controller creates a capacity lease.
@@ -410,13 +418,13 @@ where
             .logical
             .active
             .as_ref()
-            .and_then(|job| self.validation(job.callback.identity));
+            .and_then(|job| self.validation(job.callback.identity, now));
         self.check_open()?;
         let pending = self
             .logical
             .pending
             .as_ref()
-            .and_then(|job| self.validation(job.callback.identity));
+            .and_then(|job| self.validation(job.callback.identity, now));
         self.check_open()?;
         if let Some(job) = &mut self.logical.active {
             Self::tighten(job, active.as_ref(), now)?;
@@ -719,7 +727,8 @@ mod macos {
     use super::*;
     use crate::voice_conversation::clock::NativeMonotonicClock;
     use crate::voice_conversation::host::{
-        self, CleanupTicket, OutputAckAuthority, SpeechLifecycleEvent, SpeechLifecycleHost,
+        self, CleanupTicket, OutputAckAuthority, SpeechEnablePreview, SpeechLifecycleEvent,
+        SpeechLifecycleHost,
     };
     use crate::voice_conversation::native_speech::{
         Detach, ResourceRetirement, RetirementFacts, RetirementOutput, RetirementReport,
@@ -885,10 +894,47 @@ mod macos {
 
     const LIFECYCLE_QUEUE: usize = 8;
 
+    fn host_error(error: host::Error) -> Error {
+        match error {
+            host::Error::Busy => Error::Busy,
+            host::Error::Closed => Error::Closed,
+            _ => Error::Unauthorized,
+        }
+    }
+
+    #[derive(Clone, Copy, PartialEq, Eq)]
+    enum RouteAvailability {
+        Known,
+        Lost,
+        Restored,
+        Closed,
+    }
+
+    #[derive(Clone, Copy)]
+    struct QueuedLifecycle {
+        event: SpeechLifecycleEvent,
+        sequence: u64,
+    }
+
+    #[derive(Clone)]
+    pub(super) struct ModeledEnablePreview {
+        host: SpeechEnablePreview,
+        owner: Weak<LifecycleOwner>,
+        sequence: u64,
+        session: ContractIdentity,
+        scope: Option<Weak<LifecycleScope>>,
+    }
+
+    struct ConfirmedModeledEnable {
+        receipt: ModeledEnablePreview,
+        confirmed_at: MonotonicTime,
+    }
+
     struct LifecycleOwner {
         host: Rc<SpeechLifecycleHost>,
-        route_known: Cell<bool>,
+        route: Cell<RouteAvailability>,
         current: RefCell<Option<Rc<LifecycleScope>>>,
+        confirmed: RefCell<Option<ConfirmedModeledEnable>>,
     }
 
     impl LifecycleOwner {
@@ -898,20 +944,12 @@ mod macos {
             authority: &LocalAuthority,
             latch: &Rc<StopLatch>,
             now: &MonotonicTime,
-        ) -> Result<LifecycleIngress> {
-            self.service(now);
-            if !self.route_known.get() || !self.host.admission_available() {
-                return Err(Error::Closed);
-            }
-            if session.app_run_id != self.host.run()
-                || !authority
-                    .try_borrow()
-                    .map_err(|_| Error::Busy)?
-                    .scope
-                    .is_some_and(|scope| native_speech::same_session(scope, session))
-            {
-                return Err(Error::Unauthorized);
-            }
+        ) -> Result<(LifecycleIngress, Deadline)> {
+            self.ready()?;
+            let mut confirmed = self.confirmed.try_borrow_mut().map_err(|_| Error::Busy)?;
+            let confirmation = confirmed.as_ref().ok_or(Error::Unauthorized)?;
+            self.check_confirmed(confirmation, session, now)?;
+            self.check_local_scope(authority, session)?;
             let mut current = self.current.try_borrow_mut().map_err(|_| Error::Busy)?;
             if authority.0.lifecycle_bound.get() {
                 return Err(Error::Unauthorized);
@@ -920,11 +958,18 @@ mod macos {
                 if old.pending() {
                     return Err(Error::Busy);
                 }
-                // Revoke the old scope before making its controls stale.
                 old.stop.record();
                 old.invalidate()?;
-                old.live.set(false);
             }
+            let deadline = self
+                .host
+                .activate_speech_enable(
+                    &confirmation.receipt.host,
+                    now,
+                    current.as_ref().map(|old| &old.live),
+                )
+                .map_err(host_error)?;
+            *confirmed = None;
             // A local grant store belongs to exactly one lifecycle binding,
             // even across different synthetic host owners.
             authority.0.lifecycle_bound.set(true);
@@ -937,6 +982,7 @@ mod macos {
                 issued: Cell::new(0),
                 applied_sequence: Cell::new(0),
                 queue: Cell::new([None; LIFECYCLE_QUEUE]),
+                last_route_loss: Cell::new(0),
                 fault: Cell::new(false),
                 fault_applied: Cell::new(false),
                 quit: Cell::new(false),
@@ -944,7 +990,92 @@ mod macos {
                 cleanup_ticket: std::cell::OnceCell::new(),
             });
             *current = Some(scope.clone());
-            Ok(LifecycleIngress(scope))
+            Ok((LifecycleIngress(scope), deadline))
+        }
+
+        fn ready(&self) -> Result<()> {
+            if matches!(
+                self.route.get(),
+                RouteAvailability::Lost | RouteAvailability::Closed
+            ) {
+                return Err(Error::Closed);
+            }
+            let current = self.current.try_borrow().map_err(|_| Error::Busy)?;
+            if current.as_ref().is_some_and(|scope| scope.pending()) {
+                return Err(Error::Busy);
+            }
+            Ok(())
+        }
+
+        fn lineage(&self) -> Result<(Option<Weak<LifecycleScope>>, u64)> {
+            let current = self.current.try_borrow().map_err(|_| Error::Busy)?;
+            Ok(current.as_ref().map_or((None, 0), |scope| {
+                (Some(Rc::downgrade(scope)), scope.applied_sequence.get())
+            }))
+        }
+
+        fn check_confirmation(
+            &self,
+            receipt: &ModeledEnablePreview,
+            session: ContractIdentity,
+            now: &MonotonicTime,
+        ) -> Result<()> {
+            if receipt.session != session {
+                return Err(Error::Unauthorized);
+            }
+            let (scope, sequence) = self.lineage()?;
+            let exact_scope = match (&scope, &receipt.scope) {
+                (None, None) => true,
+                (Some(scope), Some(expected)) => Weak::ptr_eq(scope, expected),
+                _ => false,
+            };
+            if !exact_scope || sequence != receipt.sequence {
+                return Err(Error::Unauthorized);
+            }
+            self.host
+                .validate_speech_enable(&receipt.host, session, now)
+                .map_err(host_error)
+        }
+
+        fn check_confirmed(
+            &self,
+            confirmation: &ConfirmedModeledEnable,
+            session: ContractIdentity,
+            now: &MonotonicTime,
+        ) -> Result<()> {
+            now.checked_duration_since(&confirmation.confirmed_at)?;
+            self.check_confirmation(&confirmation.receipt, session, now)
+        }
+
+        fn check_local_scope(
+            &self,
+            authority: &LocalAuthority,
+            session: ContractIdentity,
+        ) -> Result<()> {
+            if session.app_run_id != self.host.run()
+                || !authority
+                    .try_borrow()
+                    .map_err(|_| Error::Busy)?
+                    .scope
+                    .is_some_and(|scope| native_speech::same_session(scope, session))
+            {
+                return Err(Error::Unauthorized);
+            }
+            Ok(())
+        }
+
+        fn check_admission(
+            &self,
+            session: ContractIdentity,
+            authority: &LocalAuthority,
+            now: &MonotonicTime,
+        ) -> Result<()> {
+            self.ready()?;
+            self.host.check_admission_available().map_err(host_error)?;
+            self.check_local_scope(authority, session)?;
+            let confirmed = self.confirmed.try_borrow().map_err(|_| Error::Busy)?;
+            let confirmation = confirmed.as_ref().ok_or(Error::Unauthorized)?;
+            self.check_confirmed(confirmation, session, now)
         }
 
         fn service(&self, now: &MonotonicTime) {
@@ -964,7 +1095,8 @@ mod macos {
         live: Cell<bool>,
         issued: Cell<u64>,
         applied_sequence: Cell<u64>,
-        queue: Cell<[Option<SpeechLifecycleEvent>; LIFECYCLE_QUEUE]>,
+        queue: Cell<[Option<QueuedLifecycle>; LIFECYCLE_QUEUE]>,
+        last_route_loss: Cell<u64>,
         fault: Cell<bool>,
         fault_applied: Cell<bool>,
         quit: Cell<bool>,
@@ -993,7 +1125,7 @@ mod macos {
         fn fail_ingress(&self, owner: &LifecycleOwner, event: SpeechLifecycleEvent) {
             self.revoke();
             self.fault.set(true);
-            owner.route_known.set(false);
+            owner.route.set(RouteAvailability::Closed);
             if event.quits() {
                 self.quit.set(true);
             }
@@ -1014,14 +1146,28 @@ mod macos {
                 return;
             }
             let mut queued = self.queue.get();
-            while let Some(event) = queued[0] {
-                if (event.revokes() && self.invalidate().is_err())
-                    || !owner.host.apply_speech_event(event, now)
-                {
-                    return;
-                }
-                if event.revokes() {
-                    self.bind_cleanup_ticket(owner);
+            while let Some(QueuedLifecycle { event, sequence }) = queued[0] {
+                if event == SpeechLifecycleEvent::RouteRestored {
+                    // Availability can drain while an old flight still needs
+                    // resolution. A newer accepted loss supersedes this receipt.
+                    let loss = self.last_route_loss.get();
+                    if owner.route.get() == RouteAvailability::Lost && loss != 0 && loss < sequence
+                    {
+                        match owner.host.restore_modeled_route(now) {
+                            Ok(()) => owner.route.set(RouteAvailability::Restored),
+                            Err(host::Error::Busy) => return,
+                            Err(_) => owner.route.set(RouteAvailability::Closed),
+                        }
+                    }
+                } else {
+                    if (event.revokes() && self.invalidate().is_err())
+                        || !owner.host.apply_speech_event(event, now)
+                    {
+                        return;
+                    }
+                    if event.revokes() {
+                        self.bind_cleanup_ticket(owner);
+                    }
                 }
                 queued.rotate_left(1);
                 queued[LIFECYCLE_QUEUE - 1] = None;
@@ -1087,8 +1233,12 @@ mod macos {
                 scope.revoke();
                 let _ = scope.invalidate(); // retained event retries a busy authority
             }
-            if receipt.event.loses_route() {
-                owner.route_known.set(false);
+            if receipt.event.loses_route() && owner.route.get() != RouteAvailability::Closed {
+                scope.last_route_loss.set(receipt.sequence);
+                owner.route.set(RouteAvailability::Lost);
+            }
+            if receipt.event == SpeechLifecycleEvent::ObserverLost || receipt.event.quits() {
+                owner.route.set(RouteAvailability::Closed);
             }
             if receipt.event.quits() {
                 scope.quit.set(true);
@@ -1100,7 +1250,10 @@ mod macos {
                 scope.fail_ingress(&owner, receipt.event);
                 return Err(Error::Busy);
             };
-            *slot = Some(receipt.event);
+            *slot = Some(QueuedLifecycle {
+                event: receipt.event,
+                sequence: receipt.sequence,
+            });
             scope.applied_sequence.set(receipt.sequence);
             scope.queue.set(queued);
             Ok(())
@@ -1478,6 +1631,7 @@ mod macos {
         accounting: Cell<Option<RetirementFacts>>,
         port_live: Rc<Cell<bool>>,
         attempted: Cell<bool>,
+        generation_fault: Cell<bool>,
         lifecycle: Option<Rc<LifecycleOwner>>,
         release_authority: Option<ReleaseAuthority>,
     }
@@ -1530,8 +1684,9 @@ mod macos {
                 lifecycle: host.map(|host| {
                     Rc::new(LifecycleOwner {
                         host,
-                        route_known: Cell::new(true),
+                        route: Cell::new(RouteAvailability::Known),
                         current: RefCell::new(None),
+                        confirmed: RefCell::new(None),
                     })
                 }),
                 run,
@@ -1546,24 +1701,15 @@ mod macos {
                 accounting: Cell::new(None),
                 port_live: Rc::new(Cell::new(false)),
                 attempted: Cell::new(false),
+                generation_fault: Cell::new(false),
                 release_authority,
             })
         }
 
-        pub(super) fn open_driver<A>(
-            self: &Rc<Self>,
-            session: ContractIdentity,
-            validate: A,
-            authority: LocalAuthority,
-            open_port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
-        ) -> Result<DriverHandle<Driver<ManagedOutput<C, S>, C, A, S>>>
-        where
-            A: Fn(ContractIdentity) -> Option<Validation> + 'static,
-        {
-            if session.app_run_id != self.run || authority.0.lifecycle_bound.get() {
-                return Err(Error::Unauthorized);
+        fn check_quiescent(&self) -> Result<()> {
+            if self.generation_fault.get() {
+                return Err(Error::Closed);
             }
-            // Check before entering the driver constructor and its factory.
             if self.port_live.get()
                 || self.accounting.get().is_some()
                 || self
@@ -1580,36 +1726,134 @@ mod macos {
             {
                 return Err(Error::Busy);
             }
+            Ok(())
+        }
+
+        pub(super) fn prepare_modeled_enable(
+            &self,
+            session: ContractIdentity,
+            lifetime: Duration,
+        ) -> Result<ModeledEnablePreview> {
+            let now = self.clock.now();
+            let lifecycle = self.lifecycle.as_ref().ok_or(Error::Unauthorized)?;
+            lifecycle.service(&now);
+            self.check_quiescent()?;
+            lifecycle.ready()?;
+            let mut confirmed = lifecycle
+                .confirmed
+                .try_borrow_mut()
+                .map_err(|_| Error::Busy)?;
+            if let Some(previous) = confirmed.as_ref() {
+                match lifecycle.check_confirmed(previous, previous.receipt.session, &now) {
+                    Ok(()) | Err(Error::Busy) => return Err(Error::Busy),
+                    Err(_) => {
+                        lifecycle
+                            .host
+                            .discard_speech_enable(&previous.receipt.host)
+                            .map_err(host_error)?;
+                        *confirmed = None;
+                    }
+                }
+            }
+            let (scope, sequence) = lifecycle.lineage()?;
+            let host = lifecycle
+                .host
+                .prepare_speech_enable(session, lifetime, &now)
+                .map_err(host_error)?;
+            Ok(ModeledEnablePreview {
+                host,
+                owner: Rc::downgrade(lifecycle),
+                sequence,
+                session,
+                scope,
+            })
+        }
+
+        pub(super) fn confirm_modeled_enable(&self, receipt: &ModeledEnablePreview) -> Result<()> {
+            let now = self.clock.now();
+            let lifecycle = self.lifecycle.as_ref().ok_or(Error::Unauthorized)?;
+            lifecycle.service(&now);
+            self.check_quiescent()?;
+            lifecycle.ready()?;
+            if !Weak::ptr_eq(&receipt.owner, &Rc::downgrade(lifecycle)) {
+                return Err(Error::Unauthorized);
+            }
+            let mut confirmed = lifecycle
+                .confirmed
+                .try_borrow_mut()
+                .map_err(|_| Error::Busy)?;
+            if confirmed.is_some() {
+                return Err(Error::Unauthorized);
+            }
+            match lifecycle.check_confirmation(receipt, receipt.session, &now) {
+                Ok(()) => {
+                    *confirmed = Some(ConfirmedModeledEnable {
+                        receipt: receipt.clone(),
+                        confirmed_at: now,
+                    });
+                    Ok(())
+                }
+                Err(Error::Busy) => Err(Error::Busy),
+                Err(error) => {
+                    lifecycle
+                        .host
+                        .discard_speech_enable(&receipt.host)
+                        .map_err(host_error)?;
+                    Err(error)
+                }
+            }
+        }
+
+        pub(super) fn open_driver<A>(
+            self: &Rc<Self>,
+            session: ContractIdentity,
+            validate: A,
+            authority: LocalAuthority,
+            open_port: impl FnOnce(OutputScope) -> Result<Box<dyn RetirementOutput>>,
+        ) -> Result<DriverHandle<Driver<ManagedOutput<C, S>, C, A, S>>>
+        where
+            A: Fn(ContractIdentity) -> Option<Validation> + 'static,
+        {
+            if session.app_run_id != self.run || authority.0.lifecycle_bound.get() {
+                return Err(Error::Unauthorized);
+            }
+            self.check_quiescent()?;
             Driver::new_bound(
                 || {
+                    // Hold the lifetime witness through the factory and its
+                    // destructor, including reentrant admission/resolution.
                     self.port_live.set(true);
                     let lease = PortLease(self.port_live.clone());
-                    let scope = {
-                        let mut scope = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
-                        *scope = scope.next_owner().map_err(Error::Native)?;
-                        scope.clone()
+                    let now = self.clock.now();
+                    let route = if let Some(lifecycle) = &self.lifecycle {
+                        lifecycle.service(&now);
+                        lifecycle.check_admission(session, &authority, &now)?;
+                        lifecycle.route.get()
+                    } else {
+                        RouteAvailability::Known
                     };
-                    let emergency = Rc::new(StopLatch::new(scope.clone(), session));
-                    let lifecycle = self
-                        .lifecycle
-                        .as_ref()
-                        .map(|owner| owner.bind(session, &authority, &emergency, &self.clock.now()))
-                        .transpose()?;
-                    let port = match open_port(scope.clone()) {
-                        Ok(port) => port,
-                        Err(error) => {
-                            if let Some(lifecycle) = lifecycle {
-                                lifecycle.0.stop.record();
-                                let _ = lifecycle.0.invalidate();
-                                lifecycle.0.live.set(false);
-                            }
-                            return Err(error);
-                        }
+                    let on_overflow = |error| {
+                        self.generation_fault.set(true);
+                        Error::Native(error)
                     };
-                    self.attempted.set(false);
+                    let candidate = {
+                        let mut base = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
+                        let next = base.next_owner().map_err(on_overflow)?;
+                        let candidate = if route == RouteAvailability::Restored {
+                            next.next_modeled_route().map_err(on_overflow)?
+                        } else {
+                            next.clone()
+                        };
+                        // Burn a factory-visible epoch even if the factory
+                        // fails. Keep the route revision pending until commit.
+                        *base = next;
+                        candidate
+                    };
+                    let emergency = Rc::new(StopLatch::new(candidate.clone(), session));
+                    let port = open_port(candidate.clone())?;
                     let managed = ManagedOutput {
                         owner: Rc::clone(self),
-                        scope: scope.clone(),
+                        scope: candidate.clone(),
                         port: Some(OwnedPort {
                             port,
                             _lease: lease,
@@ -1625,12 +1869,36 @@ mod macos {
                         self.run,
                         session.interaction_id,
                     )?;
+                    let after = self.clock.now();
+                    after.checked_duration_since(&now)?;
+                    coordinator.logical.check_time(&after)?;
+                    let mut base = self.scope.try_borrow_mut().map_err(|_| Error::Busy)?;
+                    let lifecycle = if let Some(lifecycle) = &self.lifecycle {
+                        lifecycle.service(&after);
+                        if lifecycle.route.get() != route {
+                            return Err(Error::Closed);
+                        }
+                        let (ingress, deadline) =
+                            lifecycle.bind(session, &coordinator.authority, &emergency, &after)?;
+                        coordinator.host_deadline = Some(deadline);
+                        lifecycle.route.set(RouteAvailability::Known);
+                        Some(ingress)
+                    } else {
+                        None
+                    };
+                    *base = candidate.clone();
+                    self.attempted.set(false);
                     coordinator.emergency = Some(emergency);
-                    coordinator.output_scope = scope;
+                    coordinator.output_scope = candidate;
                     Ok((coordinator, lifecycle))
                 },
                 self.scheduler.clone(),
             )
+        }
+
+        #[cfg(test)]
+        pub(super) fn exhaust_modeled_epoch(&self) {
+            self.scope.borrow_mut().exhaust_epoch();
         }
 
         fn collect(&self, port: &mut dyn RetirementOutput) -> bool {
@@ -1685,14 +1953,6 @@ mod macos {
             Ok(ReleaseChallenge { flight, ticket })
         }
 
-        fn host_error(error: host::Error) -> Error {
-            if error == host::Error::Busy {
-                Error::Busy
-            } else {
-                Error::Unauthorized
-            }
-        }
-
         pub(super) fn resolve_output(
             &self,
             ticket: &CleanupTicket,
@@ -1725,7 +1985,7 @@ mod macos {
             let host = lifecycle
                 .host
                 .prepare_output_ack(&authority.host, ticket)
-                .map_err(Self::host_error)?;
+                .map_err(host_error)?;
 
             match (obligation.as_ref(), report.as_ref(), evidence) {
                 (None, None, None) if !self.attempted.get() => (),
